@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="container-fluid" style="max-width:1100px">
+  <div class="card mb-3">
+    <div class="card-body">
+      <h4>HDHomeRun FF</h4>
+      <p class="text-muted mb-0">HDHomeRun 직접 채널을 FFmpeg HLS로 변환해 Shyni 라이브 TV에 제공합니다. HDHomeRun의 LAN 주소는 M3U에 노출되지 않습니다.</p>
+    </div>
+  </div>
+
+  <form id="hdhr_setting_form">
+    <div class="card mb-3">
+      <div class="card-header">1. HDHomeRun 장비</div>
+      <div class="card-body">
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">HDHomeRun 주소</label>
+          <div class="col-sm-9"><input class="form-control" name="basic_hdhomerun_base_url" value="{{ arg.get('basic_hdhomerun_base_url', '') }}" placeholder="예: http://192.168.x.x"></div>
+        </div>
+        <button type="button" class="btn btn-primary mr-2" id="hdhr_probe_btn">장비 확인</button>
+        <button type="button" class="btn btn-outline-primary" id="hdhr_lineup_btn">native lineup 가져오기</button>
+        <small class="form-text text-muted">자동 검색이 안 되는 Docker 환경에서는 장비의 사설망 IP를 입력하세요. 가져오기는 장비 설정을 변경하지 않습니다.</small>
+        <pre id="hdhr_device_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header">2. 한국 주파수 프리셋</div>
+      <div class="card-body">
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">프리셋</label>
+          <div class="col-sm-9"><select class="form-control" name="basic_hdhomerun_preset_id" id="hdhr_preset_id">
+            {% for preset in presets %}<option value="{{ preset.id }}" {% if arg.get('basic_hdhomerun_preset_id') == preset.id %}selected{% endif %}>{{ preset.name }} — {{ preset.mux_count }} mux</option>{% endfor %}
+          </select></div>
+        </div>
+        <button type="button" class="btn btn-outline-secondary" id="hdhr_scan_plan_btn">스캔 계획 확인</button>
+        <small class="form-text text-muted">프리셋은 장비의 전역 channel map을 자동 변경하지 않습니다. 실제 유휴 튜너 스캔은 별도 단계로 실행됩니다.</small>
+        <pre id="hdhr_scan_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
+      </div>
+    </div>
+
+    <div class="card mb-3">
+      <div class="card-header">3. Shyni 재생 목록</div>
+      <div class="card-body">
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">기본 출력</label>
+          <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile">
+            <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (코덱 변환 없음)</option>
+            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile') == 'mobile_cpu' %}selected{% endif %}>모바일 H.264/AAC (CPU 변환)</option>
+          </select></div>
+        </div>
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">유휴 종료 시간</label>
+          <div class="col-sm-9"><input class="form-control" type="number" min="30" max="600" name="basic_hls_idle_timeout" value="{{ arg.get('basic_hls_idle_timeout', '60') }}"></div>
+        </div>
+        <button type="button" class="btn btn-primary" id="hdhr_save_btn">설정 저장</button>
+        <hr>
+        <div><strong>Shyni 기본 M3U:</strong> <code>{{ m3u_default_url }}</code></div>
+        <div><strong>원본 전용 M3U:</strong> <code>{{ m3u_copy_url }}</code></div>
+        <div><strong>모바일 H.264/AAC M3U:</strong> <code>{{ m3u_mobile_url }}</code></div>
+        <small class="form-text text-muted">현재 저장 채널: {{ channel_summary.enabled }}개 활성 / {{ channel_summary.total }}개 전체. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
+      </div>
+    </div>
+  </form>
+
+  <div class="card mb-3">
+    <div class="card-header">4. 채널 목록</div>
+    <div class="card-body table-responsive">
+      <table class="table table-sm"><thead><tr><th>번호</th><th>이름</th><th>영상</th><th>음성</th><th>상태</th></tr></thead><tbody>
+      {% for channel in channels %}<tr><td>{{ channel.guide_number }}</td><td>{{ channel.name }}</td><td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td><td>{{ '활성' if channel.enabled else '비활성' }}</td></tr>{% endfor %}
+      {% if not channels %}<tr><td colspan="5" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
+      </tbody></table>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-header">진단</div>
+    <div class="card-body"><button type="button" class="btn btn-outline-secondary" id="hdhr_diag_btn">FFmpeg 지원 확인</button><pre id="hdhr_diag_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre></div>
+  </div>
+</div>
+
+<script>
+(function(){
+  var root='/' + {{ package_name|tojson }} + '/ajax/' + {{ ajax_sub|tojson }} + '/';
+  var form=$('#hdhr_setting_form');
+  function call(sub, target) {
+    $.ajax({url:root+sub, type:'POST', data:form.serialize()}).done(function(ret){
+      $(target).text(JSON.stringify(ret, null, 2));
+      if (ret.ret === 'success' && (sub === 'import_native_lineup' || sub === 'setting_save')) location.reload();
+    }).fail(function(xhr){ $(target).text(xhr.responseText || '요청 실패'); });
+  }
+  $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
+  $('#hdhr_lineup_btn').on('click', function(){call('import_native_lineup','#hdhr_device_result');});
+  $('#hdhr_scan_plan_btn').on('click', function(){call('preview_scan_plan','#hdhr_scan_result');});
+  $('#hdhr_save_btn').on('click', function(){call('setting_save','#hdhr_device_result');});
+  $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});
+})();
+</script>
+{% endblock %}
