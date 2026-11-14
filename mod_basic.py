@@ -87,7 +87,6 @@ class ModuleBasic(PluginModuleBase):
 
     def __init__(self, P):
         super(ModuleBasic, self).__init__(P, name='basic', first_menu='device')
-        _hls_options()
 
     def plugin_load(self):
         """Prepare local state after FF has loaded the plugin settings."""
