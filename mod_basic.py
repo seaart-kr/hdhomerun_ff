@@ -89,6 +89,21 @@ class ModuleBasic(PluginModuleBase):
         super(ModuleBasic, self).__init__(P, name='basic', first_menu='device')
         _hls_options()
 
+    def plugin_load(self):
+        """Prepare local state after FF has loaded the plugin settings."""
+        try:
+            _store().init_db()
+            _hls_options()
+            logger.info('[hdhomerun_ff] local channel store is ready')
+        except Exception:
+            # Do not make a failed optional initialization obscure FF's plugin
+            # loader error; subsequent requests return the normal safe error.
+            logger.exception('[hdhomerun_ff] plugin initialization failed')
+
+    def plugin_unload(self):
+        """Terminate local encoders when FF unloads or reloads this plugin."""
+        HLSManager.stop_all()
+
     @staticmethod
     def _save_settings(req):
         P.ModelSetting.setting_save(req)

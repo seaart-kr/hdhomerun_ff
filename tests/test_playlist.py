@@ -25,3 +25,20 @@ def test_m3u_uses_proxy_and_never_source_url():
     assert 'https://ff.example/hdhomerun_ff/api/hls.m3u8?' in text
     assert 'p=mobile_cpu' in text
     assert '192.168.1.10' not in text
+
+
+def test_m3u_keeps_device_text_to_one_safe_line():
+    text = build_shyni_m3u(
+        [{
+            'channel_id': 'device:101',
+            'name': 'KBS "News"\nInjected',
+            'group_name': 'Public\rTV',
+            'enabled': True,
+        }],
+        'https://ff.example/',
+        'hdhomerun_ff',
+    )
+    lines = text.splitlines()
+    assert len(lines) == 3
+    assert 'KBS \'News\' Injected' in lines[1]
+    assert 'group-title="Public TV"' in lines[1]
