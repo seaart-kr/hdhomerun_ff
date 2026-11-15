@@ -48,13 +48,14 @@ class PresetScanRunnerTest(unittest.TestCase):
             }],
         )
         target = ScanTarget(0, 267000000, 'VSB/8', 'ATSC-T')
-        runner.start(base_url='http://192.168.2.17', device_id='box', tuner_count=4, targets=[target])
+        runner.start(base_url='http://192.168.2.17', device_id='box', tuner_count=4, targets=[target], scan_kind='full_kr')
         state = self.wait_for(runner)
         self.assertEqual(state['state'], 'complete')
         self.assertEqual(state['stored_channels'], 1)
         self.assertEqual(store.saved[0], 'box')
         self.assertFalse(store.saved[1][0]['enabled'])
         self.assertEqual(store.profile[1]['learned_muxes'], [{'frequency_hz':267000000, 'modulation':'VSB/8'}])
+        self.assertTrue(store.profile[1]['full_scan_completed'])
 
     def test_empty_service_result_leaves_store_untouched(self):
         called = []

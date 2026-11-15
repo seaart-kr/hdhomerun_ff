@@ -45,7 +45,7 @@ def _scan_plan(req):
     mode = str(req.form.get('basic_hdhomerun_scan_mode') or P.ModelSetting.get('basic_hdhomerun_scan_mode') or 'auto')
     device_id = P.ModelSetting.get('basic_hdhomerun_device_id') or ''
     learned = _store().learned_preset(device_id)
-    if mode == 'fast' or (mode == 'auto' and learned['muxes']):
+    if mode == 'fast' or (mode == 'auto' and learned['muxes'] and _store().device_profile(device_id).get('full_scan_completed')):
         if not learned['muxes']:
             raise ValueError('저장된 수신 주파수가 없습니다. 한국 전체 탐색을 먼저 실행하세요.')
         preset = learned
@@ -272,6 +272,7 @@ class ModuleBasic(PluginModuleBase):
                     device_id=device.device_id,
                     tuner_count=device.tuner_count,
                     targets=plan.targets,
+                    scan_kind='full_kr' if preset['id'] == 'kr-full-auto' else mode,
                 )
                 return jsonify({
                     'ret': 'success',

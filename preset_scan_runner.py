@@ -59,6 +59,7 @@ class PresetScanRunner:
         device_id: str,
         tuner_count: int,
         targets: Sequence[Any],
+        scan_kind: str = '',
     ) -> dict[str, Any]:
         if not str(device_id or '').strip():
             raise ValueError('HDHomeRun 장비 확인을 먼저 실행하세요.')
@@ -85,6 +86,7 @@ class PresetScanRunner:
                     'tuner_count': int(tuner_count),
                     'targets': tuple(targets),
                     'cancel': self._cancel,
+                    'scan_kind': scan_kind,
                 },
                 name='hdhomerun-ff-preset-scan',
                 daemon=True,
@@ -114,7 +116,7 @@ class PresetScanRunner:
             self._state['message'] = '프리셋 스캔 취소를 요청했습니다. 현재 mux를 정리한 뒤 유휴 튜너를 해제합니다.'
             return dict(self._state)
 
-    def _run(self, *, base_url: str, device_id: str, tuner_count: int, targets: Sequence[Any], cancel: threading.Event) -> None:
+    def _run(self, *, base_url: str, device_id: str, tuner_count: int, targets: Sequence[Any], cancel: threading.Event, scan_kind: str = '') -> None:
         try:
             control = self._control_factory(base_url)
             scans = control.scan_targets(
@@ -136,7 +138,10 @@ class PresetScanRunner:
             learned = [{'frequency_hz': s.target.frequency_hz, 'modulation':
                         {'8vsb':'VSB/8','qam256':'QAM/256','qam64':'QAM/64'}.get(s.status.lock, s.target.modulation)}
                        for s in scans if s.status.is_locked and s.services]
-            self._store_factory().update_device_profile(device_id, learned_muxes=learned)
+            updates = {'learned_muxes': learned}
+            if scan_kind == 'full_kr':
+                updates['full_scan_completed'] = True
+            self._store_factory().update_device_profile(device_id, **updates)
             self._finish(
                 state='complete',
                 stored_channels=int(stored),
