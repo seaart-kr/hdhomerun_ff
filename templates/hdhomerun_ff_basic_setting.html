@@ -1,16 +1,18 @@
 {% extends "base.html" %}
 {% block content %}
+{% set current_page = page_sub|default('device', true) %}
 <div class="container-fluid" style="max-width:1100px">
   <div class="card mb-3">
     <div class="card-body">
-      <h4>HDHomeRun FF</h4>
+      <h4>HDHomeRun FF · {{ {'device':'장비 / 채널', 'preset':'주파수 프리셋', 'playback':'재생 / API', 'diagnostics':'진단'}.get(current_page, '장비 / 채널') }}</h4>
       <p class="text-muted mb-0">HDHomeRun 직접 채널을 FFmpeg HLS로 변환해 Shyni 라이브 TV에 제공합니다. HDHomeRun의 LAN 주소는 M3U에 노출되지 않습니다.</p>
     </div>
   </div>
 
   <form id="hdhr_setting_form">
+    {% if current_page == 'device' %}
     <div class="card mb-3">
-      <div class="card-header">1. HDHomeRun 장비 / 장비 제공 라인업</div>
+      <div class="card-header">HDHomeRun 장비 / 장비 제공 라인업</div>
       <div class="card-body">
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">HDHomeRun 주소</label>
@@ -18,19 +20,23 @@
         </div>
         <button type="button" class="btn btn-primary mr-2" id="hdhr_probe_btn">장비 확인</button>
         <button type="button" class="btn btn-outline-warning" id="hdhr_lineup_btn">장비 제공 lineup 가져오기</button>
+        <button type="button" class="btn btn-outline-primary ml-2" id="hdhr_save_btn">장비 주소 저장</button>
         <div class="alert alert-warning py-2 mt-3 mb-2" role="alert">
           <strong>프리셋 미사용:</strong> 이 버튼은 HDHomeRun의 현재 <code>/lineup.json</code>만 가져옵니다.
-          아래 CMB 주파수 프리셋으로 스캔하거나 필터링하지 않으므로, 장비의 channel map과 무관한 채널도 그대로 들어올 수 있습니다.
+          주파수 프리셋으로 스캔하거나 필터링하지 않습니다. 프리셋 스캔은 <a href="/{{ package_name }}/basic/preset">주파수 프리셋</a> 메뉴에서 실행하세요.
         </div>
         <small class="form-text text-muted">자동 검색이 안 되는 Docker 환경에서는 장비의 사설망 IP를 입력하세요. 가져오기는 장비 설정을 변경하지 않지만, 이 플러그인에 저장된 해당 장비의 채널 목록은 교체합니다.</small>
         <div id="hdhr_native_notice" class="alert alert-warning py-2 mt-3 mb-0 d-none" role="alert"></div>
         <pre id="hdhr_device_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
       </div>
     </div>
+    {% endif %}
 
+    {% if current_page == 'preset' %}
     <div class="card mb-3">
-      <div class="card-header">2. 한국 자동 탐색 / 빠른 재탐색</div>
+      <div class="card-header">한국 자동 탐색 / 빠른 재탐색</div>
       <div class="card-body">
+        <p class="small text-muted">장비 주소는 <a href="/{{ package_name }}/basic/device">장비 / 채널</a> 메뉴에서 저장·확인하세요. 탐색 결과의 사용 여부도 장비 / 채널에서 선택합니다.</p>
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">탐색 방식</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hdhomerun_scan_mode" id="hdhr_scan_mode">
@@ -49,10 +55,11 @@
         <button type="button" class="btn btn-outline-secondary" id="hdhr_scan_plan_btn">탐색 계획 확인</button>
         <button type="button" class="btn btn-warning ml-2" id="hdhr_scan_btn">채널 탐색 시작</button>
         <button type="button" class="btn btn-outline-danger ml-2" id="hdhr_scan_cancel_btn">스캔 취소</button>
+        <button type="button" class="btn btn-outline-primary ml-2" id="hdhr_save_btn">탐색 설정 저장</button>
         {% if learned_mux_count %}<a class="btn btn-outline-secondary ml-2" href="{{ scan_export_url }}">발견 주파수 내려받기</a>{% endif %}
         <div class="alert alert-info py-2 mt-3 mb-2" role="alert">
           실제 스캔은 이 버튼을 눌렀을 때만 실행되며, 다른 재생에 쓰이지 않는 유휴 튜너 1개를 잠시 사용합니다.
-          이름이 수신된 채널은 기본으로 사용 체크됩니다. 선택한 일반 채널은 FF를 통해 Shyni에서 재생하며, 암호화·제어·데이터 없음 서비스는 M3U에서 제외합니다.
+          이름이 수신된 채널은 장비 / 채널 목록에서 기본으로 사용 체크됩니다. 선택한 일반 채널은 FF를 통해 Shyni에서 재생하며, 암호화·제어·데이터 없음 서비스는 M3U에서 제외합니다.
         </div>
         <small class="form-text text-muted">한국 전체 탐색은 프리셋 파일 없이 실행됩니다. 발견된 주파수와 변조 방식은 이 FF에 저장됩니다.</small>
         <div class="border rounded p-3 mt-3" id="hdhr_scan_progress" aria-live="polite" aria-atomic="true">
@@ -61,14 +68,16 @@
           <div class="mt-2"><span id="hdhr_scan_muxes">주파수 0 / 0개 완료</span><span class="ml-3" id="hdhr_scan_services">발견 서비스 0개</span></div>
           <div class="small text-muted mt-1" id="hdhr_scan_message"></div>
           <div class="small text-muted mt-1" id="hdhr_scan_connection"></div>
-          <button type="button" class="btn btn-sm btn-outline-primary mt-2 d-none" id="hdhr_scan_channels_btn">발견 채널 목록 새로고침</button>
+          <a class="btn btn-sm btn-outline-primary mt-2 d-none" id="hdhr_scan_channels_btn" href="/{{ package_name }}/basic/device">발견 채널 목록 보기</a>
         </div>
         <pre id="hdhr_scan_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
       </div>
     </div>
+    {% endif %}
 
+    {% if current_page == 'playback' %}
     <div class="card mb-3">
-      <div class="card-header">3. Shyni 재생 목록</div>
+      <div class="card-header">Shyni 재생 / 트랜스코딩 / API</div>
       <div class="card-body">
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">M3U 채널 출처</label>
@@ -145,10 +154,12 @@
         <small class="form-text text-muted">현재 저장 채널: {{ channel_summary.enabled }}개 활성 / {{ channel_summary.total }}개 전체. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
       </div>
     </div>
+    {% endif %}
   </form>
 
+  {% if current_page == 'device' %}
   <div class="card mb-3">
-    <div class="card-header">4. 채널 목록</div>
+    <div class="card-header">채널 목록</div>
     <div class="card-body table-responsive">
       <p class="small text-muted">사용할 채널을 체크하세요. 변경은 즉시 저장되고 다시 스캔해도 선택이 유지됩니다. 새 스캔 채널은 이름이 있으면 기본 선택됩니다.</p>
       <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
@@ -165,11 +176,14 @@
       </tbody></table>
     </div>
   </div>
+  {% endif %}
 
+  {% if current_page == 'diagnostics' %}
   <div class="card mb-3">
     <div class="card-header">진단</div>
     <div class="card-body"><button type="button" class="btn btn-outline-secondary" id="hdhr_diag_btn">FFmpeg 지원 확인</button><pre id="hdhr_diag_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre></div>
   </div>
+  {% endif %}
 </div>
 
 <script>
@@ -278,7 +292,6 @@
   $('#hdhr_scan_cancel_btn').on('click', function(){
     scanAction('cancel_preset_scan');
   });
-  $('#hdhr_scan_channels_btn').on('click', function(){location.reload();});
   $('.hdhr-channel-selected').on('change', function(){
     var checkbox=$(this);
     var selected=checkbox.prop('checked');
@@ -299,11 +312,14 @@
       $('#hdhr_channel_selection_count').text($('.hdhr-channel-selected:checked').length+'개 사용 선택');
     });
   });
-  $('#hdhr_save_btn').on('click', function(){call('setting_save','#hdhr_device_result');});
+  $('#hdhr_save_btn').on('click', function(){
+    var target=$('#hdhr_device_result').length ? '#hdhr_device_result' : ($('#hdhr_scan_result').length ? '#hdhr_scan_result' : '#hdhr_transcode_result');
+    call('setting_save',target);
+  });
   $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});
   $('#hdhr_source_probe_btn').on('click', function(){call('probe_source_format','#hdhr_source_result');});
-  scanStatus();
-  transcodeSummary();
+  if ($('#hdhr_scan_progress').length) scanStatus();
+  if ($('#hdhr_output_profile').length) transcodeSummary();
 })();
 </script>
 {% endblock %}
