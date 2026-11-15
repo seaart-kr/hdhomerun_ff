@@ -5,7 +5,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 
-SUPPORTED_OUTPUT_PROFILES = {'copy', 'mobile_cpu'}
+SUPPORTED_OUTPUT_PROFILES = {'copy', 'mobile_cpu', 'mobile_1080'}
 
 
 def normalise_output_profile(value: str | None) -> str:

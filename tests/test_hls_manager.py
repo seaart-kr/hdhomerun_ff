@@ -57,10 +57,20 @@ class HLSManagerTest(unittest.TestCase):
         self.assertEqual(command[command.index('-preset')+1], 'ultrafast')
         self.assertIn("aac", command)
         self.assertIn("yuv420p", command)
-        self.assertIn("yadif=0:-1:0", command)
+        vf = command[command.index('-vf')+1]
+        self.assertIn("yadif=0:-1:1", vf)
+        self.assertIn('min(1280,iw)', vf)
+        self.assertIn('min(720,ih)', vf)
+        self.assertEqual(command[command.index('-b:v')+1], '3000k')
+        self.assertEqual(command[command.index('-maxrate')+1], '4000k')
         self.assertIn("expr:gte(t,n_forced*2)", command)
         self.assertNotIn("copy", command)
         self.assertNotIn("vaapi", " ".join(command).lower())
+
+    def test_high_quality_profile_retains_original_dimensions(self):
+        command=HLSManager.build_command('http://192.168.1.10/live','channel','mobile_1080')
+        self.assertEqual(command[command.index('-vf')+1], 'yadif=0:-1:0')
+        self.assertNotIn('-b:v',command)
 
     def test_stream_identity_is_isolated_by_profile(self):
         copy_dir = HLSManager.stream_directory("device:7", "copy")
@@ -94,11 +104,19 @@ class HLSManagerTest(unittest.TestCase):
         os.makedirs(directory, mode=0o700)
         playlist_path = os.path.join(directory, "index.m3u8")
         with open(playlist_path, "w", encoding="utf-8") as handle:
-            handle.write("#EXTM3U\n#EXTINF:2.0,\nsegment_000000001.ts\n")
+            handle.write("#EXTM3U\n"+''.join(f'#EXTINF:2.0,\nsegment_{i:09d}.ts\n' for i in range(3)))
         self.assertIn("#EXTINF", HLSManager.get_playlist("device:7", "copy"))
         old = time.time() - HLSManager.PLAYLIST_MAX_AGE - 1
         os.utime(playlist_path, (old, old))
         self.assertEqual(HLSManager.get_playlist("device:7", "copy"), "")
+
+    def test_initial_playback_waits_for_three_segments(self):
+        directory=HLSManager.stream_directory('device:7','mobile_cpu')
+        os.makedirs(directory)
+        for count in (1,2,3):
+            with open(os.path.join(directory,'index.m3u8'),'w') as handle:
+                handle.write('#EXTM3U\n'+''.join(f'#EXTINF:2.0,\nsegment_{i:09d}.ts\n' for i in range(count)))
+            self.assertEqual(bool(HLSManager.get_playlist('device:7','mobile_cpu')), count==3)
 
     def test_clear_refuses_cache_root_or_outside_path(self):
         with self.assertRaises(ValueError):

@@ -33,10 +33,11 @@ class HLSManager:
     DEFAULT_CACHE_ROOT = "/data/tmp/hdhomerun_ff_hls"
     CACHE_ROOT = DEFAULT_CACHE_ROOT
 
-    PROFILES = ("copy", "mobile_cpu")
+    PROFILES = ("copy", "mobile_cpu", "mobile_1080")
     SEGMENT_RE = re.compile(r"^segment_[0-9]{9}\.ts$")
     IDLE_TIMEOUT = 60
-    START_TIMEOUT = 15
+    START_TIMEOUT = 25
+    MIN_READY_SEGMENTS = 3
     PLAYLIST_MAX_AGE = 8
     HLS_TIME = 2
     HLS_LIST_SIZE = 30
@@ -68,7 +69,7 @@ class HLSManager:
             if idle_timeout is not None:
                 cls.IDLE_TIMEOUT = cls._bounded_int(idle_timeout, 30, 600, 60)
             if start_timeout is not None:
-                cls.START_TIMEOUT = cls._bounded_int(start_timeout, 1, 60, 15)
+                cls.START_TIMEOUT = cls._bounded_int(start_timeout, 1, 60, 25)
             return {
                 "cache_root": cls.CACHE_ROOT,
                 "idle_timeout": cls.IDLE_TIMEOUT,
@@ -180,6 +181,11 @@ class HLSManager:
             "0:a:0?",
         ]
 
+        if profile == 'mobile_cpu':
+            # Bound decoder/filter thread overhead on small NAS CPUs.
+            at = command.index('-i')
+            command[at:at] = ['-threads', '2', '-filter_threads', '2']
+
         if profile == "copy":
             command.extend(["-c", "copy"])
         else:
@@ -193,7 +199,8 @@ class HLSManager:
                 "-tune",
                 "zerolatency",
                 "-vf",
-                "yadif=0:-1:0",
+                ("yadif=0:-1:1,fps=30000/1001,scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear"
+                 if profile == 'mobile_cpu' else "yadif=0:-1:0"),
                 "-profile:v",
                 "main",
                 "-pix_fmt",
@@ -211,6 +218,9 @@ class HLSManager:
                 "-ar",
                 "48000",
             ])
+            if profile == 'mobile_cpu':
+                command.extend(['-threads:v', '2', '-b:v', '3000k',
+                                '-maxrate', '4000k', '-bufsize', '8000k'])
 
         command.extend([
             "-f",
@@ -249,7 +259,7 @@ class HLSManager:
                 return ""
             with open(playlist_path, "r", encoding="utf-8") as handle:
                 playlist = handle.read()
-            if "#EXTM3U" not in playlist or "#EXTINF:" not in playlist:
+            if "#EXTM3U" not in playlist or playlist.count('#EXTINF:') < cls.MIN_READY_SEGMENTS:
                 return ""
             return playlist
         except OSError:

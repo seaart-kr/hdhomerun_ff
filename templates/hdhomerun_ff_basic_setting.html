@@ -90,7 +90,8 @@
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">Shyni 기본 출력</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile">
-            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 트랜스코딩 (Shyni 권장 · CPU 변환)</option>
+            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 안정형 (최대 720p · 약 3Mbps · Shyni 권장)</option>
+            <option value="mobile_1080" {% if arg.get('basic_hls_output_profile') == 'mobile_1080' %}selected{% endif %}>H.264/AAC 고화질 (원본 해상도 유지 · CPU/통신 부하 높음)</option>
             <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (고급 · 코덱 변환 없음)</option>
           </select></div>
         </div>
