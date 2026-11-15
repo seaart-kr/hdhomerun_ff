@@ -2,14 +2,15 @@
 from __future__ import annotations
 
 import logging
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, urlencode, parse_qsl
+import re
 from urllib.request import Request, build_opener
 
 try:
-    from .hdhomerun import HDHomeRunError, _NoRedirect, normalize_base_url
+    from .hdhomerun import HDHomeRunError, _NoRedirect, normalize_base_url, _stream_url_for_origin
     from .hdhr_control import HDHomeRunControlClient, HDHomeRunControlError
 except ImportError:
-    from hdhomerun import HDHomeRunError, _NoRedirect, normalize_base_url
+    from hdhomerun import HDHomeRunError, _NoRedirect, normalize_base_url, _stream_url_for_origin
     from hdhr_control import HDHomeRunControlClient, HDHomeRunControlError
 
 logger = logging.getLogger(__name__)
@@ -77,6 +78,34 @@ def is_mpeg_ts(data: bytes) -> bool:
     """Require multiple 188-byte packet syncs, not merely HTTP 200."""
     return any(all(data[offset+n*188] == 0x47 for n in range(4))
                for offset in range(min(188, max(0, len(data)-188*3))))
+
+
+class NativeStreamSession(RawStreamSession):
+    """Native lineups also use the allocated tuner subset, never /auto bypass."""
+
+    def __init__(self, base_url, tuner_count, channel, control_factory=HDHomeRunControlClient):
+        self.base_url=normalize_base_url(base_url)
+        self.control=control_factory(self.base_url)
+        self.tuner_count=tuner_count
+        self.source=_stream_url_for_origin(channel['source_url'],self.base_url)
+        self.lease=None
+
+    def open(self):
+        self.lease=self.control.acquire_idle_tuner(self.tuner_count)
+        parsed=urlsplit(self.source)
+        path=re.sub(r'^/(?:auto|tuner\d+)(?=/|$)',f'/tuner{self.lease.tuner_index}',parsed.path)
+        query=[(k,v) for k,v in parse_qsl(parsed.query) if k!='lockkey']
+        query.append(('lockkey',str(self.lease.lockkey)))
+        return urlunsplit((parsed.scheme,parsed.netloc,path,urlencode(query),''))
+
+    def close(self):
+        lease,self.lease=self.lease,None
+        if lease is None:return
+        try:self.control.release_tuner(lease)
+        except HDHomeRunControlError:
+            # Closing the native HTTP response may already release its lock.
+            if not self.control.tuner_is_idle(lease.tuner_index):
+                logger.warning('Native tuner is no longer owned by this session')
 
 
 def probe_http_format(base_url, tuner_count, channel, mode='auto', session_factory=RawStreamSession, opener=None):

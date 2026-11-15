@@ -1,7 +1,7 @@
 import unittest
 from types import SimpleNamespace
 
-from raw_stream import RawStreamSession, probe_http_format, is_mpeg_ts
+from raw_stream import RawStreamSession, NativeStreamSession, probe_http_format, is_mpeg_ts
 from hdhr_control import HDHomeRunControlError
 from hdhomerun import HDHomeRunError
 
@@ -33,6 +33,13 @@ class FakeControl:
 
 
 class RawStreamTest(unittest.TestCase):
+    def test_native_auto_lineup_uses_reserved_tuner_and_budget(self):
+        control=FakeControl()
+        session=NativeStreamSession('192.168.2.17',3,{'source_url':'http://192.168.2.17:5004/auto/v7.1'},control_factory=lambda _:control)
+        self.assertEqual(session.open(),'http://192.168.2.17:5004/tuner2/v7.1?lockkey=123')
+        self.assertIn(('acquire',3),control.calls)
+        session.close()
+        self.assertEqual(control.calls[-1],('release',123))
     def test_reserved_tuner_mode_and_restoration_after_http_releases_lock(self):
         control = FakeControl()
         session = RawStreamSession('192.168.2.17',4,CHANNEL,control_factory=lambda _:control)

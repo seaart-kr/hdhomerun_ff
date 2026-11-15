@@ -21,6 +21,32 @@
         <button type="button" class="btn btn-primary mr-2" id="hdhr_probe_btn">장비 확인</button>
         <button type="button" class="btn btn-outline-warning" id="hdhr_lineup_btn">장비 제공 lineup 가져오기</button>
         <button type="button" class="btn btn-outline-primary ml-2" id="hdhr_save_btn">장비 주소 저장</button>
+        <div id="hdhr_device_info" class="border rounded p-3 mt-3 {% if not device_info %}d-none{% endif %}">
+          <h5>확인된 HDHomeRun 정보</h5>
+          <dl class="row mb-2">
+            {% for key,label in [('friendly_name','장비 이름'),('model_number','모델'),('device_id','장비 ID'),('firmware_version','펌웨어'),('base_url','장비 주소'),('checked_at','최근 확인')] %}
+            <dt class="col-sm-3">{{ label }}</dt><dd class="col-sm-9" id="hdhr_info_{{ key }}">{{ device_info.get(key, '-') }}</dd>
+            {% endfor %}
+            <dt class="col-sm-3">동시 수신 튜너</dt><dd class="col-sm-9"><strong id="hdhr_info_tuner_count">{{ device_info.get('tuner_count','-') }}</strong>개 지원 · FF 최대 <strong id="hdhr_info_tuner_limit">{{ device_info.get('tuner_limit','-') }}</strong>개 사용</dd>
+          </dl>
+          <ul id="hdhr_tuner_status" class="small mb-0">
+            {% for tuner in device_info.get('tuners',[]) %}<li>{{ tuner.index+1 }}번 튜너: {{ '확인 불가' if tuner.busy is none else ('사용 중' if tuner.busy else '유휴') }} · 신호 {{ tuner.signal }}%</li>{% endfor %}
+          </ul>
+        </div>
+        <div class="form-group row mt-3">
+          <label class="col-sm-3 col-form-label" for="hdhr_tuner_limit">FF에서 사용할 최대 튜너 수</label>
+          <div class="col-sm-9">
+            <select class="form-control" id="hdhr_tuner_limit" {% if not device_info %}disabled{% endif %}>
+              <option value="all" {% if arg.get('basic_hdhomerun_tuner_limit', 'all') == 'all' %}selected{% endif %}>전체 자동{% if device_info %} · {{ device_info.tuner_count }}개{% endif %}</option>
+              {% for number in range(1, device_info.get('tuner_count',0)+1) %}<option value="{{ number }}" {% if arg.get('basic_hdhomerun_tuner_limit') != 'all' and device_info.get('tuner_limit') == number %}selected{% endif %}>{{ number }}개</option>{% endfor %}
+            </select>
+            <small class="form-text text-muted">4튜너 장비라면 최대 4개 중 원하는 수를 지정합니다. 방송 채널 목록 개수와는 다릅니다. 스캔·호환성 확인·원본·변환 재생 모두 이 범위의 튜너만 사용합니다.</small>
+            <button type="button" class="btn btn-primary mt-2" id="hdhr_tuner_limit_save_btn" {% if not device_info %}disabled{% endif %}>사용 튜너 수 저장·적용</button>
+            <small class="form-text text-muted">줄이면 범위를 초과한 FF 재생을 종료하고 진행 중인 스캔에는 취소를 요청합니다. 다른 기기가 사용 중인 튜너는 강제로 가져오지 않습니다.</small>
+            <div id="hdhr_tuner_limit_result" role="status" aria-live="polite" class="mt-2"></div>
+          </div>
+        </div>
+        <div class="alert alert-info py-2">방송 목록: 발견 서비스 <strong id="hdhr_count_discovered">{{ broadcast_counts.discovered }}</strong>개 · 사용 가능한 일반 채널 <strong id="hdhr_count_usable">{{ broadcast_counts.usable }}</strong>개 · 그중 사용 선택 <strong id="hdhr_count_selected">{{ broadcast_counts.selected }}</strong>개</div>
         <div class="alert alert-warning py-2 mt-3 mb-2" role="alert">
           <strong>프리셋 미사용:</strong> 이 버튼은 HDHomeRun의 현재 <code>/lineup.json</code>만 가져옵니다.
           주파수 프리셋으로 스캔하거나 필터링하지 않습니다. 프리셋 스캔은 <a href="/{{ package_name }}/basic/preset">주파수 프리셋</a> 메뉴에서 실행하세요.
@@ -151,7 +177,7 @@
         <small class="form-text text-muted">위 출력 방식 선택을 반영하려면 Shyni 기본 M3U를 사용하고 Shyni의 채널 목록을 새로고침하세요. 변환 전용/원본 전용 주소는 각각 해당 출력으로 고정됩니다.</small>
         <details class="my-2"><summary>고급: 원본 전용 M3U · 트랜스코딩하지 않음</summary><code>{{ m3u_copy_url }}</code></details>
         <div><strong>H.264/AAC 변환 전용 M3U (Shyni 권장):</strong> <code>{{ m3u_mobile_url }}</code></div>
-        <small class="form-text text-muted">현재 저장 채널: {{ channel_summary.enabled }}개 활성 / {{ channel_summary.total }}개 전체. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
+        <small class="form-text text-muted">현재 M3U에 제공하는 채널: {{ playable_channel_count }}개. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
       </div>
     </div>
     {% endif %}
@@ -165,7 +191,7 @@
       <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
       <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>이름</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
       {% for channel in channels %}<tr>
-        <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
+        <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
         <td>{{ channel.guide_number }}</td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% else %}{{ channel.name }}{% endif %}</td>
         <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
@@ -194,6 +220,19 @@
   var scanRequest=null;
   var scanActionPending=false;
   var scanRetries=0;
+  function renderDevice(device,counts){
+    if (!device) return;
+    ['friendly_name','model_number','device_id','firmware_version','base_url','checked_at','tuner_count','tuner_limit'].forEach(function(key){$('#hdhr_info_'+key).text(device[key]===undefined ? '-' : device[key]);});
+    $('#hdhr_device_info').removeClass('d-none');
+    var select=$('#hdhr_tuner_limit').empty().prop('disabled',false);
+    $('<option>').val('all').text('전체 자동 · '+device.tuner_count+'개').appendTo(select);
+    for(var i=1;i<=device.tuner_count;i++) $('<option>').val(String(i)).text(i+'개').appendTo(select);
+    select.val(device.tuner_limit===device.tuner_count ? 'all' : String(device.tuner_limit));
+    $('#hdhr_tuner_limit_save_btn').prop('disabled',false);
+    var statuses=$('#hdhr_tuner_status').empty();
+    (device.tuners || []).forEach(function(t){$('<li>').text((t.index+1)+'번 튜너: '+(t.busy===null ? '확인 불가' : (t.busy ? '사용 중' : '유휴'))+' · 신호 '+t.signal+'%').appendTo(statuses);});
+    if(counts) ['discovered','usable','selected'].forEach(function(key){$('#hdhr_count_'+key).text(counts[key]);});
+  }
   function transcodeSummary(){
     var profile=$('#hdhr_output_profile').val();
     $('.transcode-video-option').prop('disabled',profile!=='mobile_cpu');
@@ -243,6 +282,8 @@
     if (extra) data += '&' + $.param(extra);
     return $.ajax({url:root+sub, type:'POST', data:data, dataType:'json', timeout:20000}).done(function(ret){
       $(target).text(JSON.stringify(ret, null, 2));
+      if (ret.ret==='success' && ret.device) renderDevice(ret.device,ret.broadcast_counts);
+      if (ret.ret==='success' && ret.device_changed) location.reload();
       if (sub === 'import_native_lineup' && ret.notice) {
         $('#hdhr_native_notice').removeClass('d-none').text(ret.notice + ' 채널 표는 새로고침하면 갱신됩니다.');
       }
@@ -278,6 +319,8 @@
     }).always(function(){scanActionPending=false;scheduleScanStatus(100);});
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
+  form.on('input','[name="basic_hdhomerun_base_url"]',function(){$('#hdhr_tuner_limit, #hdhr_tuner_limit_save_btn').prop('disabled',true);});
+  $('#hdhr_tuner_limit_save_btn').on('click',function(){call('save_tuner_limit','#hdhr_tuner_limit_result',{basic_hdhomerun_tuner_limit:$('#hdhr_tuner_limit').val()});});
   $('#hdhr_lineup_btn').on('click', function(){
     if (window.confirm('이 작업은 CMB 프리셋을 적용하지 않고 HDHomeRun의 현재 lineup만 가져옵니다. 계속할까요?')) {
       call('import_native_lineup','#hdhr_device_result');
@@ -310,6 +353,7 @@
     }).always(function(){
       checkbox.prop('disabled',false);
       $('#hdhr_channel_selection_count').text($('.hdhr-channel-selected:checked').length+'개 사용 선택');
+      $('#hdhr_count_selected').text($('.hdhr-channel-selected[data-count-usable="1"]:checked').length);
     });
   });
   $('#hdhr_save_btn').on('click', function(){

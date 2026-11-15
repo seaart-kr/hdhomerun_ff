@@ -53,6 +53,15 @@ class HLSManagerTest(unittest.TestCase):
         self.assertEqual(result['ret'],'warning')
         cleanup.assert_called_once()
 
+    def test_lower_budget_stops_only_owned_excess_tuners_for_that_device(self):
+        callbacks=[Mock() for _ in range(3)]
+        for i,(base,index) in enumerate([('http://192.168.1.2',0),('http://192.168.1.2',3),('http://192.168.1.3',3)]):
+            HLSManager._streams[str(i)]={'device_base':base,'tuner_index':index,'cleanup':callbacks[i],
+              'process':None,'directory':os.path.join(self.tempdir.name,str(i))}
+        self.assertEqual(HLSManager.enforce_tuner_budget('http://192.168.1.2',2),1)
+        callbacks[1].assert_called_once()
+        callbacks[0].assert_not_called();callbacks[2].assert_not_called()
+
     def test_mobile_cpu_command_transcodes_video_and_audio(self):
         command = HLSManager.build_command("http://192.168.1.10:5004/auto/v7", "device:7", "mobile_cpu")
         self.assertIn("libx264", command)

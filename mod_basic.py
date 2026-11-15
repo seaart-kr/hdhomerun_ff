@@ -4,23 +4,25 @@ from __future__ import annotations
 
 import os
 import re
+from datetime import datetime
 from urllib.parse import urlencode
 
 from flask import Response, jsonify, render_template, request
 from plugin import PluginModuleBase, ToolUtil
 
 from .diagnostics import ffmpeg_capabilities
-from .hdhr_control import HDHomeRunControlError
+from .hdhr_control import HDHomeRunControlError, HDHomeRunControlClient
 from .hdhomerun import HDHomeRunClient, HDHomeRunError
 from .hls_manager import HLSManager
 from .model import ChannelStore
 from .playlist import build_shyni_m3u, normalise_output_profile
 from .preset import PresetValidationError, list_bundled_presets, load_bundled_preset, korean_full_scan_preset, dump_preset
 from .preset_scan_runner import PresetScanRunner
-from .raw_stream import RawStreamSession, probe_http_format
+from .raw_stream import RawStreamSession, NativeStreamSession, probe_http_format
+from .device_config import tuner_budget, discovery_summary, broadcast_counts, usable_broadcast
 from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_options
 from .setup import P, logger
-from .task import device_summary, snapshot_channel_rows
+from .task import snapshot_channel_rows
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -66,13 +68,35 @@ def _playback_device():
     return device
 
 
+def _tuner_count(device):
+    return tuner_budget(P.ModelSetting.get('basic_hdhomerun_tuner_limit') or 'all',device.tuner_count)
+
+
+def _device_display(device):
+    info=discovery_summary(device)
+    info['tuner_limit']=_tuner_count(device)
+    info['checked_at']=datetime.now().isoformat(timespec='seconds')
+    statuses=[]
+    control=HDHomeRunControlClient(device.base_url,timeout=1)
+    for index in range(device.tuner_count):
+        try:
+            status=control.tuner_status(index)
+            statuses.append({'index':index,'busy':status.fields.get('ch','none') not in ('none',''),
+                             'lock':status.lock,'signal':status.signal_strength})
+        except (HDHomeRunError,OSError):
+            statuses.append({'index':index,'busy':None,'lock':'확인 불가','signal':0})
+    info['tuners']=statuses
+    _store().update_device_profile(device.device_id,discovery=info)
+    return info
+
+
 def _source_format(device, channel, force=False):
     mode = str(P.ModelSetting.get('basic_hdhomerun_stream_format') or 'auto')
     profile = _store().device_profile(device.device_id)
     cache = profile.get('http_stream', {})
     if not force and cache.get('firmware') == device.firmware_version and cache.get('base_url') == device.base_url and cache.get('mode') == mode and cache.get('suffix') in {'', '.mpeg'}:
         return cache
-    result = probe_http_format(device.base_url, device.tuner_count, channel, mode)
+    result = probe_http_format(device.base_url, _tuner_count(device), channel, mode)
     result.update(firmware=device.firmware_version, base_url=device.base_url, mode=mode)
     _store().update_device_profile(device.device_id, http_stream=result)
     return result
@@ -85,7 +109,8 @@ def _output_profile():
 def _playlist_channels():
     source = P.ModelSetting.get('basic_hdhomerun_playlist_source') or 'scan'
     return [c for c in _store().playback_channels()
-            if (c['raw_data'].get('source') == 'preset_scan') == (source == 'scan')]
+            if c['device_id']==P.ModelSetting.get('basic_hdhomerun_device_id')
+            and (c['raw_data'].get('source') == 'preset_scan') == (source == 'scan')]
 
 
 def _hls_options():
@@ -136,6 +161,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_base_url': '',
         'basic_hdhomerun_device_id': '',
         'basic_hdhomerun_device_name': '',
+        'basic_hdhomerun_tuner_limit': 'all',
         'basic_hdhomerun_preset_id': 'kr-cable-cmb-v1',
         'basic_hdhomerun_scan_mode': 'auto',
         'basic_hdhomerun_stream_format': 'auto',
@@ -176,13 +202,20 @@ class ModuleBasic(PluginModuleBase):
 
     def _menu_arg(self, sub):
         settings = P.ModelSetting.to_dict()
-        channels = _store().list_channels()
+        channels = [c for c in _store().list_channels() if c['device_id']==settings.get('basic_hdhomerun_device_id')]
         settings['basic_hls_output_profile'] = _output_profile()
         settings['basic_hls_idle_timeout'] = str(_as_int(settings.get('basic_hls_idle_timeout'), 60, 30, 600))
         options=_hls_options()['transcode']
         settings.update({'basic_transcode_'+key:str(value) for key,value in options.items()})
+        device_info=_store().device_profile(settings.get('basic_hdhomerun_device_id') or '').get('discovery',{})
+        if device_info:
+            device_info['tuner_limit']=tuner_budget(settings.get('basic_hdhomerun_tuner_limit') or 'all',device_info['tuner_count'])
         return {
             'arg': settings,
+            'device_info':device_info,
+            'broadcast_counts':broadcast_counts(channels,settings.get('basic_hdhomerun_device_id')),
+            'usable_channel_ids':{c['channel_id'] for c in channels if usable_broadcast(c)},
+            'playable_channel_count':len(_playlist_channels()),
             'transcode_presets': PRESETS,
             'transcode_options': options,
             'page_sub': sub,
@@ -236,12 +269,30 @@ class ModuleBasic(PluginModuleBase):
                            '설정을 저장했습니다. 다음 새 재생부터 적용됩니다. 바로 반영하려면 저장·적용을 누르세요.')})
 
             if sub == 'probe_device':
-                self._save_settings(req)
-                snapshot = self._client_from_settings().fetch_snapshot()
-                info = device_summary(snapshot)
-                P.ModelSetting.set('basic_hdhomerun_device_id', info['device_id'])
-                P.ModelSetting.set('basic_hdhomerun_device_name', info['friendly_name'])
-                return jsonify({'ret': 'success', 'msg': 'HDHomeRun 장비를 확인했습니다.', 'device': info})
+                base_url=req.form.get('basic_hdhomerun_base_url') or P.ModelSetting.get('basic_hdhomerun_base_url') or ''
+                device=HDHomeRunClient(base_url).fetch_discover()
+                changed=bool(P.ModelSetting.get('basic_hdhomerun_device_id') and P.ModelSetting.get('basic_hdhomerun_device_id')!=device.device_id)
+                P.ModelSetting.set('basic_hdhomerun_base_url',device.base_url)
+                P.ModelSetting.set('basic_hdhomerun_device_id',device.device_id)
+                P.ModelSetting.set('basic_hdhomerun_device_name',device.friendly_name)
+                info=_device_display(device)
+                return jsonify({'ret': 'success', 'msg': 'HDHomeRun 장비를 확인했습니다.', 'device': info,
+                                'device_changed':changed,
+                                'broadcast_counts':broadcast_counts(_store().list_channels(),device.device_id)})
+
+            if sub == 'save_tuner_limit':
+                device=_playback_device()
+                requested=str(req.form.get('basic_hdhomerun_tuner_limit') or 'all')
+                limit=tuner_budget(requested,device.tuner_count)
+                if requested!='all' and int(requested)>device.tuner_count:
+                    raise ValueError(f'이 장비는 최대 {device.tuner_count}개 튜너를 사용할 수 있습니다.')
+                old_limit=_tuner_count(device)
+                P.ModelSetting.set('basic_hdhomerun_tuner_limit',requested)
+                stopped=HLSManager.enforce_tuner_budget(device.base_url,limit)
+                if limit<old_limit and _PRESET_SCAN_RUNNER.status().get('running'):
+                    _PRESET_SCAN_RUNNER.cancel()
+                return jsonify({'ret':'success','device':_device_display(device),
+                    'msg':f'총 {device.tuner_count}개 중 FF 사용을 최대 {limit}개로 저장했습니다. 초과 FF 재생 {stopped}개를 정리했습니다.'})
 
             if sub == 'import_native_lineup':
                 self._save_settings(req)
@@ -252,7 +303,8 @@ class ModuleBasic(PluginModuleBase):
                     rows,
                     source_scope='native_lineup',
                 )
-                info = device_summary(snapshot)
+                info = _device_display(snapshot.device)
+                info.update(lineup_count=len(snapshot.lineup.channels),skipped_lineup_entries=snapshot.lineup.skipped_entries)
                 P.ModelSetting.set('basic_hdhomerun_device_id', info['device_id'])
                 P.ModelSetting.set('basic_hdhomerun_device_name', info['friendly_name'])
                 return jsonify({
@@ -303,7 +355,7 @@ class ModuleBasic(PluginModuleBase):
                 status = _PRESET_SCAN_RUNNER.start(
                     base_url=base_url,
                     device_id=device.device_id,
-                    tuner_count=device.tuner_count,
+                    tuner_count=_tuner_count(device),
                     targets=plan.targets,
                     scan_kind='full_kr' if preset['id'] == 'kr-full-auto' else mode,
                 )
@@ -419,11 +471,15 @@ class ModuleBasic(PluginModuleBase):
                             raise ValueError('현재 장비의 채널이 아닙니다.')
                         stream_format = _source_format(device, channel)
                         def source_factory():
-                            session = RawStreamSession(device.base_url, device.tuner_count, channel, stream_format['suffix'])
+                            session = RawStreamSession(device.base_url, _tuner_count(device), channel, stream_format['suffix'])
                             return session.open(), session.close
                         result = HLSManager.ensure_stream(channel_id, device.base_url, profile, consumer_id, source_factory=source_factory)
                     else:
-                        result = HLSManager.ensure_stream(channel_id, channel['source_url'], profile, consumer_id)
+                        device=_playback_device()
+                        def native_source_factory():
+                            session=NativeStreamSession(device.base_url,_tuner_count(device),channel)
+                            return session.open(),session.close
+                        result = HLSManager.ensure_stream(channel_id, channel['source_url'], profile, consumer_id,source_factory=native_source_factory)
                     if result.get('ret') != 'success':
                         return Response(result.get('msg') or 'HLS unavailable', status=int(result.get('status') or 502), mimetype='text/plain')
                     playlist = str(result.get('playlist') or '')

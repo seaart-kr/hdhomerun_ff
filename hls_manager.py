@@ -366,6 +366,8 @@ class HLSManager:
                     "last_access": now,
                     "cleanup": cleanup,
                     "options": dict(cls.TRANSCODE),
+                    "tuner_index":getattr(getattr(getattr(cleanup,'__self__',None),'lease',None),'tuner_index',None),
+                    "device_base":getattr(getattr(cleanup,'__self__',None),'base_url',None),
                 }
                 cls._streams[key] = state
                 cls._start_janitor_locked()
@@ -480,6 +482,14 @@ class HLSManager:
         with cls._lock:
             state=cls._streams.get(cls.stream_key(channel_id,output_profile))
             return dict(state.get('options',cls.TRANSCODE) if state else cls.TRANSCODE)
+
+    @classmethod
+    def enforce_tuner_budget(cls, base_url, count):
+        with cls._lock:
+            keys=[key for key,state in cls._streams.items() if state.get('device_base')==base_url
+                  and isinstance(state.get('tuner_index'),int) and state['tuner_index']>=count]
+            for key in keys:cls._stop_state_locked(key,clear=True)
+            return len(keys)
 
     @classmethod
     def read_segment(
