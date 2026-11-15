@@ -10,21 +10,26 @@
 
   <form id="hdhr_setting_form">
     <div class="card mb-3">
-      <div class="card-header">1. HDHomeRun 장비</div>
+      <div class="card-header">1. HDHomeRun 장비 / 장비 제공 라인업</div>
       <div class="card-body">
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">HDHomeRun 주소</label>
           <div class="col-sm-9"><input class="form-control" name="basic_hdhomerun_base_url" value="{{ arg.get('basic_hdhomerun_base_url', '') }}" placeholder="예: http://192.168.x.x"></div>
         </div>
         <button type="button" class="btn btn-primary mr-2" id="hdhr_probe_btn">장비 확인</button>
-        <button type="button" class="btn btn-outline-primary" id="hdhr_lineup_btn">native lineup 가져오기</button>
-        <small class="form-text text-muted">자동 검색이 안 되는 Docker 환경에서는 장비의 사설망 IP를 입력하세요. 가져오기는 장비 설정을 변경하지 않습니다.</small>
+        <button type="button" class="btn btn-outline-warning" id="hdhr_lineup_btn">장비 제공 lineup 가져오기</button>
+        <div class="alert alert-warning py-2 mt-3 mb-2" role="alert">
+          <strong>프리셋 미사용:</strong> 이 버튼은 HDHomeRun의 현재 <code>/lineup.json</code>만 가져옵니다.
+          아래 CMB 주파수 프리셋으로 스캔하거나 필터링하지 않으므로, 장비의 channel map과 무관한 채널도 그대로 들어올 수 있습니다.
+        </div>
+        <small class="form-text text-muted">자동 검색이 안 되는 Docker 환경에서는 장비의 사설망 IP를 입력하세요. 가져오기는 장비 설정을 변경하지 않지만, 이 플러그인에 저장된 해당 장비의 채널 목록은 교체합니다.</small>
+        <div id="hdhr_native_notice" class="alert alert-warning py-2 mt-3 mb-0 d-none" role="alert"></div>
         <pre id="hdhr_device_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
       </div>
     </div>
 
     <div class="card mb-3">
-      <div class="card-header">2. 한국 주파수 프리셋</div>
+      <div class="card-header">2. 한국 주파수 프리셋 기반 스캔</div>
       <div class="card-body">
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">프리셋</label>
@@ -32,8 +37,12 @@
             {% for preset in presets %}<option value="{{ preset.id }}" {% if arg.get('basic_hdhomerun_preset_id') == preset.id %}selected{% endif %}>{{ preset.name }} — {{ preset.mux_count }} mux</option>{% endfor %}
           </select></div>
         </div>
-        <button type="button" class="btn btn-outline-secondary" id="hdhr_scan_plan_btn">스캔 계획 확인</button>
-        <small class="form-text text-muted">프리셋은 장비의 전역 channel map을 자동 변경하지 않습니다. 실제 유휴 튜너 스캔은 별도 단계로 실행됩니다.</small>
+        <button type="button" class="btn btn-outline-secondary" id="hdhr_scan_plan_btn">프리셋 주파수 목록 확인</button>
+        <div class="alert alert-info py-2 mt-3 mb-2" role="alert">
+          현재 버전은 프리셋의 주파수 목록만 검증합니다. 아직 실제 튜너 tune/service scan 엔진은 없으므로,
+          이 프리셋은 위의 장비 제공 lineup을 변경하거나 정리하지 않습니다.
+        </div>
+        <small class="form-text text-muted">프리셋은 장비의 전역 channel map을 자동 변경하지 않습니다.</small>
         <pre id="hdhr_scan_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
       </div>
     </div>
@@ -65,9 +74,9 @@
   <div class="card mb-3">
     <div class="card-header">4. 채널 목록</div>
     <div class="card-body table-responsive">
-      <table class="table table-sm"><thead><tr><th>번호</th><th>이름</th><th>영상</th><th>음성</th><th>상태</th></tr></thead><tbody>
-      {% for channel in channels %}<tr><td>{{ channel.guide_number }}</td><td>{{ channel.name }}</td><td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td><td>{{ '활성' if channel.enabled else '비활성' }}</td></tr>{% endfor %}
-      {% if not channels %}<tr><td colspan="5" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
+      <table class="table table-sm"><thead><tr><th>번호</th><th>이름</th><th>출처</th><th>영상</th><th>음성</th><th>상태</th></tr></thead><tbody>
+      {% for channel in channels %}<tr><td>{{ channel.guide_number }}</td><td>{{ channel.name }}</td><td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td><td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td><td>{{ '활성' if channel.enabled else '비활성' }}</td></tr>{% endfor %}
+      {% if not channels %}<tr><td colspan="6" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
     </div>
   </div>
@@ -85,11 +94,18 @@
   function call(sub, target) {
     $.ajax({url:root+sub, type:'POST', data:form.serialize()}).done(function(ret){
       $(target).text(JSON.stringify(ret, null, 2));
-      if (ret.ret === 'success' && (sub === 'import_native_lineup' || sub === 'setting_save')) location.reload();
+      if (sub === 'import_native_lineup' && ret.notice) {
+        $('#hdhr_native_notice').removeClass('d-none').text(ret.notice + ' 채널 표는 새로고침하면 갱신됩니다.');
+      }
+      if (ret.ret === 'success' && sub === 'setting_save') location.reload();
     }).fail(function(xhr){ $(target).text(xhr.responseText || '요청 실패'); });
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
-  $('#hdhr_lineup_btn').on('click', function(){call('import_native_lineup','#hdhr_device_result');});
+  $('#hdhr_lineup_btn').on('click', function(){
+    if (window.confirm('이 작업은 CMB 프리셋을 적용하지 않고 HDHomeRun의 현재 lineup만 가져옵니다. 계속할까요?')) {
+      call('import_native_lineup','#hdhr_device_result');
+    }
+  });
   $('#hdhr_scan_plan_btn').on('click', function(){call('preview_scan_plan','#hdhr_scan_result');});
   $('#hdhr_save_btn').on('click', function(){call('setting_save','#hdhr_device_result');});
   $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});

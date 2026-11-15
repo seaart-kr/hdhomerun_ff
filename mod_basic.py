@@ -166,9 +166,18 @@ class ModuleBasic(PluginModuleBase):
                 P.ModelSetting.set('basic_hdhomerun_device_name', info['friendly_name'])
                 return jsonify({
                     'ret': 'success',
-                    'msg': f'HDHomeRun native lineup 채널 {imported}개를 저장했습니다.',
+                    'msg': (
+                        f'HDHomeRun 장비 제공 native lineup 채널 {imported}개를 저장했습니다. '
+                        '선택한 주파수 프리셋은 이 가져오기에 적용되지 않았습니다.'
+                    ),
                     'device': info,
                     'summary': _store().summary(),
+                    'source': 'native_lineup',
+                    'preset_applied': False,
+                    'notice': (
+                        '이 채널은 HDHomeRun의 현재 /lineup.json 결과입니다. '
+                        'CMB 프리셋으로 주파수를 스캔하거나 필터링한 결과가 아닙니다.'
+                    ),
                 })
 
             if sub == 'preview_scan_plan':
@@ -176,11 +185,16 @@ class ModuleBasic(PluginModuleBase):
                 preset = load_bundled_preset(P.ModelSetting.get('basic_hdhomerun_preset_id') or '')
                 plan = HDHomeRunClient.build_initial_scan_plan(preset)
                 return jsonify({
-                    'ret': 'success',
-                    'msg': f'{preset["name"]} 프리셋 {len(plan.targets)}개 mux를 준비했습니다. 실제 장비 scan은 유휴 튜너를 예약하는 다음 단계에서 실행됩니다.',
+                    'ret': 'warning',
+                    'msg': (
+                        f'{preset["name"]} 프리셋의 {len(plan.targets)}개 mux 목록을 확인했습니다. '
+                        '현재 플러그인 버전에는 이 주파수를 실제 HDHomeRun 튜너에 tune/service scan하는 엔진이 포함되어 있지 않습니다.'
+                    ),
                     'preset': {'id': plan.preset_id, 'delivery_system': plan.delivery_system},
                     'mux_count': len(plan.targets),
                     'changes_device_channelmap': plan.changes_device_channelmap,
+                    'actual_scan_ran': False,
+                    'native_lineup_used': False,
                 })
 
             if sub == 'set_channel_enabled':
