@@ -1,5 +1,5 @@
 title: "HDHomeRun FF"
-version: "0.2.1"
+version: "0.2.2"
 package_name: "hdhomerun_ff"
 developer: "seaart-kr"
 description: "HDHomeRun 직접 채널을 Shyni용 M3U/HLS로 제공"

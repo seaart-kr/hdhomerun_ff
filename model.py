@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from datetime import datetime
@@ -21,6 +22,13 @@ def default_db_path() -> str:
 
 def now_str() -> str:
     return datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+
+
+def has_channel_name(name: str) -> bool:
+    """Distinguish broadcast names from scanner/device placeholders."""
+    name = str(name or '').strip()
+    return bool(name and name.lower() not in {'0', 'unknown', '(encrypted)', '(control)', '(no data)'}
+                and not re.fullmatch(r'Program\s+\d+', name, re.IGNORECASE))
 
 
 class ChannelStore:
@@ -53,12 +61,16 @@ class ChannelStore:
                     audio_codec TEXT DEFAULT '',
                     group_name TEXT DEFAULT 'HDHomeRun',
                     enabled INTEGER NOT NULL DEFAULT 1,
+                    selected INTEGER DEFAULT NULL,
                     raw_data TEXT NOT NULL DEFAULT '{}',
                     created_time TEXT NOT NULL,
                     updated_time TEXT NOT NULL
                 )
                 """
             )
+            columns = {row['name'] for row in connection.execute('PRAGMA table_info(hdhomerun_ff_channel)')}
+            if 'selected' not in columns:
+                connection.execute('ALTER TABLE hdhomerun_ff_channel ADD COLUMN selected INTEGER DEFAULT NULL')
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_hdhomerun_ff_channel_device
@@ -197,7 +209,7 @@ class ChannelStore:
         with self._connection() as connection:
             rows = connection.execute(
                 f'''SELECT channel_id, device_id, guide_number, name, source_url, logo_url,
-                           video_codec, audio_codec, group_name, enabled, raw_data,
+                           video_codec, audio_codec, group_name, enabled, selected, raw_data,
                            created_time, updated_time
                     FROM hdhomerun_ff_channel {where}
                     ORDER BY CAST(guide_number AS REAL), guide_number, name, channel_id'''
@@ -210,8 +222,29 @@ class ChannelStore:
             except (TypeError, ValueError):
                 item['raw_data'] = {}
             item['enabled'] = bool(item['enabled'])
+            item['selected'] = self._selected(item)
             result.append(item)
         return result
+
+    @staticmethod
+    def _selected(item: dict[str, Any]) -> bool:
+        if item.get('selected') is not None:
+            return bool(item['selected'])
+        if item['raw_data'].get('source') == 'preset_scan':
+            return has_channel_name(item['name'])
+        return bool(item['enabled'])
+
+    def set_selected(self, channel_id: str, selected: bool) -> bool:
+        """Save a user's choice without enabling a source that cannot play."""
+        self.init_db()
+        with self._connection() as connection:
+            updated = connection.execute(
+                '''UPDATE hdhomerun_ff_channel
+                   SET selected = ?, enabled = CASE WHEN TRIM(source_url) != '' THEN ? ELSE 0 END,
+                       updated_time = ? WHERE channel_id = ?''',
+                (int(bool(selected)), int(bool(selected)), now_str(), str(channel_id or '').strip()),
+            ).rowcount
+        return updated == 1
 
     def get_channel(self, channel_id: str) -> dict[str, Any] | None:
         channel_id = str(channel_id or '').strip()

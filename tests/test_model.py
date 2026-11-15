@@ -19,6 +19,10 @@ def channel(channel_id='hdhr:box:7:abc', enabled=True, name='MBC', device_id='bo
 
 
 class ChannelStoreTest(unittest.TestCase):
+    def scan_channel(self, name='KBS 1', suffix='3'):
+        return dict(channel_id='hdhrscan:box:'+suffix, device_id='box', name=name,
+                    source_url='', enabled=False, raw_data={'source':'preset_scan'})
+
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         self.store = ChannelStore(f'{self.tempdir.name}/channels.db')
@@ -71,6 +75,47 @@ class ChannelStoreTest(unittest.TestCase):
         refreshed_native['name'] = 'MBC HD'
         self.store.replace_device_channels('box', [refreshed_native], source_scope='native_lineup')
         self.assertEqual(self.store.summary(), {'total': 2, 'enabled': 1})
+
+    def test_scan_selection_defaults_to_real_name_without_enabling_playback(self):
+        rows = [self.scan_channel(name, str(i)) for i, name in enumerate(
+            ['KBS 1', 'Program 12', 'Unknown', '0', '(encrypted)', '시네마천국'])]
+        self.store.replace_preset_scan_channels('box', rows)
+        saved = {row['name']:row for row in self.store.list_channels()}
+        self.assertTrue(saved['KBS 1']['selected'])
+        self.assertTrue(saved['시네마천국']['selected'])
+        for name in ['Program 12', 'Unknown', '0', '(encrypted)']:
+            self.assertFalse(saved[name]['selected'])
+        self.assertEqual(self.store.list_channels(enabled_only=True), [])
+
+    def test_scan_selection_survives_refresh_and_database_reopen(self):
+        rows = [self.scan_channel(), self.scan_channel('Program 4', '4')]
+        self.store.replace_preset_scan_channels('box', rows)
+        self.assertTrue(self.store.set_selected(rows[0]['channel_id'], False))
+        self.assertTrue(self.store.set_selected(rows[1]['channel_id'], True))
+        self.store.replace_preset_scan_channels('box', rows)
+        reopened = ChannelStore(self.store.path)
+        saved = {row['channel_id']:row for row in reopened.list_channels()}
+        self.assertFalse(saved[rows[0]['channel_id']]['selected'])
+        self.assertTrue(saved[rows[1]['channel_id']]['selected'])
+        self.assertEqual(reopened.list_channels(enabled_only=True), [])
+
+    def test_selection_controls_native_playlist_inclusion(self):
+        self.store.replace_device_channels('box', [channel()])
+        self.assertTrue(self.store.set_selected(channel()['channel_id'], False))
+        self.assertEqual(self.store.list_channels(enabled_only=True), [])
+        self.assertTrue(self.store.set_selected(channel()['channel_id'], True))
+        self.assertEqual(len(self.store.list_channels(enabled_only=True)), 1)
+        self.assertFalse(self.store.set_selected('missing', True))
+
+    def test_legacy_database_adds_selection_without_losing_channels(self):
+        import sqlite3
+        self.store.replace_preset_scan_channels('box', [self.scan_channel()])
+        with sqlite3.connect(self.store.path) as connection:
+            connection.execute('ALTER TABLE hdhomerun_ff_channel DROP COLUMN selected')
+        rows = self.store.list_channels()
+        self.assertEqual(len(rows), 1)
+        self.assertTrue(rows[0]['selected'])
+        self.assertFalse(rows[0]['enabled'])
 
 
 if __name__ == '__main__':

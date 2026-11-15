@@ -42,7 +42,7 @@
         <button type="button" class="btn btn-outline-danger ml-2" id="hdhr_scan_cancel_btn">스캔 취소</button>
         <div class="alert alert-info py-2 mt-3 mb-2" role="alert">
           실제 스캔은 이 버튼을 눌렀을 때만 실행되며, 다른 재생에 쓰이지 않는 유휴 튜너 1개를 잠시 사용합니다.
-          장비 제공 lineup은 변경하지 않습니다. 발견 서비스는 튜너 임대형 재생이 아직 연결되지 않아 <strong>비활성</strong>으로만 저장되며 M3U에는 추가되지 않습니다.
+          이름이 수신된 채널은 아래 목록에서 기본으로 사용 체크됩니다. 스캔 채널의 재생 연결은 준비 중이며, 현재 M3U에는 재생 주소가 있는 채널만 제공됩니다.
         </div>
         <small class="form-text text-muted">프리셋은 장비의 전역 channel map을 자동 변경하지 않습니다.</small>
         <div class="border rounded p-3 mt-3" id="hdhr_scan_progress" aria-live="polite" aria-atomic="true">
@@ -84,15 +84,18 @@
   <div class="card mb-3">
     <div class="card-header">4. 채널 목록</div>
     <div class="card-body table-responsive">
-      <table class="table table-sm"><thead><tr><th>번호</th><th>이름</th><th>출처</th><th>영상</th><th>음성</th><th>상태</th></tr></thead><tbody>
+      <p class="small text-muted">사용할 채널을 체크하세요. 변경은 즉시 저장되고 다시 스캔해도 선택이 유지됩니다. 새 스캔 채널은 이름이 있으면 기본 선택됩니다.</p>
+      <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
+      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>이름</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
       {% for channel in channels %}<tr>
+        <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
         <td>{{ channel.guide_number }}</td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% else %}{{ channel.name }}{% endif %}</td>
         <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
         <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
-        <td>{{ '활성' if channel.enabled else '비활성' }}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
+        <td>{% if not channel.source_url %}재생 연결 준비 중{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
       </tr>{% endfor %}
-      {% if not channels %}<tr><td colspan="6" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
+      {% if not channels %}<tr><td colspan="7" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
     </div>
   </div>
@@ -110,6 +113,7 @@
   var scanTimer=null;
   var scanRequest=null;
   var scanActionPending=false;
+  var scanRetries=0;
   function scheduleScanStatus(delay) {
     window.clearTimeout(scanTimer);
     scanTimer=window.setTimeout(scanStatus, delay);
@@ -147,16 +151,24 @@
   }
   function scanStatus() {
     if (scanRequest || scanActionPending) {scheduleScanStatus(1500); return;}
-    scanRequest=$.ajax({url:root+'scan_preset_status', type:'POST', dataType:'json', timeout:15000}).done(function(ret){
-      if (ret.scan) renderScan(ret.scan);
-      else $('#hdhr_scan_connection').text(ret.msg || '스캔 상태를 확인하지 못했습니다. 다시 확인 중입니다.');
-      scheduleScanStatus(ret.scan && ret.scan.running ? 1500 : 5000);
-    }).fail(function(){
-      $('#hdhr_scan_connection').text('상태 확인 연결이 지연되고 있습니다. 5초 뒤 다시 확인합니다.');
-      scheduleScanStatus(5000);
+    scanRequest=$.ajax({url:root+'scan_preset_status', type:'POST', dataType:'json', timeout:15000, global:false}).done(function(ret){
+      scanRetries=0;
+      if (ret.scan) {
+        renderScan(ret.scan);
+        if (ret.scan.running) scheduleScanStatus(1500);
+        else window.clearTimeout(scanTimer);
+      } else $('#hdhr_scan_connection').text(ret.msg || '스캔 상태를 확인하지 못했습니다. 페이지를 새로고침하세요.');
+    }).fail(function(xhr,status){
+      if (status==='abort') return;
+      scanRetries++;
+      if (scanRetries<=3) {
+        $('#hdhr_scan_connection').text('상태 확인 연결이 지연되고 있습니다. 5초 뒤 다시 확인합니다.');
+        scheduleScanStatus(5000);
+      } else $('#hdhr_scan_connection').text('상태 확인 연결이 끊겼습니다. 페이지를 새로고침하면 다시 확인합니다.');
     }).always(function(){scanRequest=null;});
   }
   function scanAction(sub, extra) {
+    scanRetries=0;
     scanActionPending=true;
     window.clearTimeout(scanTimer);
     if (scanRequest) {scanRequest.abort();scanRequest=null;}
@@ -181,6 +193,26 @@
     scanAction('cancel_preset_scan');
   });
   $('#hdhr_scan_channels_btn').on('click', function(){location.reload();});
+  $('.hdhr-channel-selected').on('change', function(){
+    var checkbox=$(this);
+    var selected=checkbox.prop('checked');
+    checkbox.prop('disabled',true);
+    $('#hdhr_channel_save_status').text('저장 중…').removeClass('text-danger text-success');
+    $.ajax({url:root+'set_channel_selected',type:'POST',dataType:'json',timeout:15000,global:false,
+      data:{channel_id:checkbox.attr('data-channel-id'),selected:selected ? 'true' : 'false'}
+    }).done(function(ret){
+      if (ret.ret!=='success') {
+        checkbox.prop('checked',!selected);
+        $('#hdhr_channel_save_status').text(ret.msg || '저장하지 못했습니다.').addClass('text-danger');
+      } else $('#hdhr_channel_save_status').text('저장했습니다.').removeClass('text-danger').addClass('text-success');
+    }).fail(function(){
+      checkbox.prop('checked',!selected);
+      $('#hdhr_channel_save_status').text('저장하지 못했습니다. 다시 선택하세요.').addClass('text-danger');
+    }).always(function(){
+      checkbox.prop('disabled',false);
+      $('#hdhr_channel_selection_count').text($('.hdhr-channel-selected:checked').length+'개 사용 선택');
+    });
+  });
   $('#hdhr_save_btn').on('click', function(){call('setting_save','#hdhr_device_result');});
   $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});
   scanStatus();

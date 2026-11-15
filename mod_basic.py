@@ -118,6 +118,7 @@ class ModuleBasic(PluginModuleBase):
 
     def _menu_arg(self, sub):
         settings = P.ModelSetting.to_dict()
+        channels = _store().list_channels()
         settings['basic_hls_output_profile'] = _output_profile()
         settings['basic_hls_idle_timeout'] = str(_as_int(settings.get('basic_hls_idle_timeout'), 60, 30, 600))
         return {
@@ -126,7 +127,8 @@ class ModuleBasic(PluginModuleBase):
             'ajax_sub': self.name,
             'package_name': P.package_name,
             'presets': list_bundled_presets(),
-            'channels': _store().list_channels(),
+            'channels': channels,
+            'selected_channel_count': sum(channel['selected'] for channel in channels),
             'channel_summary': _store().summary(),
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
@@ -255,6 +257,19 @@ class ModuleBasic(PluginModuleBase):
                     return jsonify({'ret': 'warning', 'msg': '채널 ID가 없습니다.'})
                 ok = _store().set_enabled(channel_id, _is_true(req.form.get('enabled')))
                 return jsonify({'ret': 'success' if ok else 'warning', 'msg': '채널 상태를 저장했습니다.' if ok else '채널을 찾지 못했습니다.'})
+
+            if sub == 'set_channel_selected':
+                channel_id = str(req.form.get('channel_id') or '').strip()
+                value = str(req.form.get('selected') or '').strip().lower()
+                if not channel_id or value not in {'true', 'false'}:
+                    raise ValueError('채널 ID와 사용 여부가 필요합니다.')
+                selected = value == 'true'
+                ok = _store().set_selected(channel_id, selected)
+                return jsonify({
+                    'ret': 'success' if ok else 'warning',
+                    'msg': '채널 사용 여부를 저장했습니다.' if ok else '채널을 찾지 못했습니다.',
+                    'selected': selected,
+                })
 
             if sub == 'diagnostics':
                 return jsonify({'ret': 'success', 'diagnostics': ffmpeg_capabilities()})
