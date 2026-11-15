@@ -10,16 +10,19 @@ from flask import Response, jsonify, render_template, request
 from plugin import PluginModuleBase, ToolUtil
 
 from .diagnostics import ffmpeg_capabilities
+from .hdhr_control import HDHomeRunControlError
 from .hdhomerun import HDHomeRunClient, HDHomeRunError
 from .hls_manager import HLSManager
 from .model import ChannelStore
 from .playlist import build_shyni_m3u, normalise_output_profile
 from .preset import PresetValidationError, list_bundled_presets, load_bundled_preset
+from .preset_scan_runner import PresetScanRunner
 from .setup import P, logger
 from .task import device_summary, snapshot_channel_rows
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_PRESET_SCAN_RUNNER = PresetScanRunner()
 
 
 def _as_int(value, fallback, minimum, maximum):
@@ -101,6 +104,7 @@ class ModuleBasic(PluginModuleBase):
 
     def plugin_unload(self):
         """Terminate local encoders when FF unloads or reloads this plugin."""
+        _PRESET_SCAN_RUNNER.shutdown()
         HLSManager.stop_all()
 
     @staticmethod
@@ -160,7 +164,11 @@ class ModuleBasic(PluginModuleBase):
                 self._save_settings(req)
                 snapshot = self._client_from_settings().fetch_snapshot()
                 rows = snapshot_channel_rows(snapshot)
-                imported = _store().replace_device_channels(snapshot.device.device_id, rows)
+                imported = _store().replace_device_channels(
+                    snapshot.device.device_id,
+                    rows,
+                    source_scope='native_lineup',
+                )
                 info = device_summary(snapshot)
                 P.ModelSetting.set('basic_hdhomerun_device_id', info['device_id'])
                 P.ModelSetting.set('basic_hdhomerun_device_name', info['friendly_name'])
@@ -181,20 +189,64 @@ class ModuleBasic(PluginModuleBase):
                 })
 
             if sub == 'preview_scan_plan':
-                self._save_settings(req)
-                preset = load_bundled_preset(P.ModelSetting.get('basic_hdhomerun_preset_id') or '')
+                preset_id = str(req.form.get('basic_hdhomerun_preset_id') or P.ModelSetting.get('basic_hdhomerun_preset_id') or '')
+                preset = load_bundled_preset(preset_id)
                 plan = HDHomeRunClient.build_initial_scan_plan(preset)
                 return jsonify({
-                    'ret': 'warning',
+                    'ret': 'success',
                     'msg': (
-                        f'{preset["name"]} 프리셋의 {len(plan.targets)}개 mux 목록을 확인했습니다. '
-                        '현재 플러그인 버전에는 이 주파수를 실제 HDHomeRun 튜너에 tune/service scan하는 엔진이 포함되어 있지 않습니다.'
+                        f'{preset["name"]} 프리셋의 {len(plan.targets)}개 mux 목록입니다. '
+                        '실제 스캔은 아래의 명시적 시작 버튼에서만 유휴 튜너를 확보해 실행됩니다.'
                     ),
                     'preset': {'id': plan.preset_id, 'delivery_system': plan.delivery_system},
                     'mux_count': len(plan.targets),
                     'changes_device_channelmap': plan.changes_device_channelmap,
                     'actual_scan_ran': False,
                     'native_lineup_used': False,
+                })
+
+            if sub == 'scan_preset':
+                if not _is_true(req.form.get('confirm_preset_scan')):
+                    raise HDHomeRunError('프리셋 실제 스캔 확인이 필요합니다.')
+                base_url = str(P.ModelSetting.get('basic_hdhomerun_base_url') or '').strip()
+                expected_device_id = str(P.ModelSetting.get('basic_hdhomerun_device_id') or '').strip().lower()
+                if not base_url or not expected_device_id:
+                    raise HDHomeRunError('장비 주소를 저장한 뒤 먼저 장비 확인을 실행하세요.')
+                preset_id = str(req.form.get('basic_hdhomerun_preset_id') or P.ModelSetting.get('basic_hdhomerun_preset_id') or '')
+                preset = load_bundled_preset(preset_id)
+                plan = HDHomeRunClient.build_initial_scan_plan(preset)
+                device = HDHomeRunClient(base_url).fetch_discover()
+                if device.device_id != expected_device_id:
+                    raise HDHomeRunError('저장된 장비와 현재 주소의 장비가 다릅니다. 장비 확인을 다시 실행하세요.')
+                P.ModelSetting.set('basic_hdhomerun_preset_id', preset['id'])
+                status = _PRESET_SCAN_RUNNER.start(
+                    base_url=base_url,
+                    device_id=device.device_id,
+                    tuner_count=device.tuner_count,
+                    targets=plan.targets,
+                )
+                return jsonify({
+                    'ret': 'success',
+                    'msg': (
+                        f'{preset["name"]} 프리셋 스캔을 시작했습니다. 유휴 튜너 1개만 사용하며, '
+                        '발견 결과는 재생 불가 상태로만 저장됩니다.'
+                    ),
+                    'scan': status,
+                    'raw_playback_connected': False,
+                })
+
+            if sub == 'scan_preset_status':
+                return jsonify({
+                    'ret': 'success',
+                    'scan': _PRESET_SCAN_RUNNER.status(),
+                    'raw_playback_connected': False,
+                })
+
+            if sub == 'cancel_preset_scan':
+                return jsonify({
+                    'ret': 'success',
+                    'msg': '프리셋 스캔 취소를 요청했습니다.',
+                    'scan': _PRESET_SCAN_RUNNER.cancel(),
                 })
 
             if sub == 'set_channel_enabled':
@@ -208,7 +260,7 @@ class ModuleBasic(PluginModuleBase):
                 return jsonify({'ret': 'success', 'diagnostics': ffmpeg_capabilities()})
 
             return jsonify({'ret': 'warning', 'msg': f'알 수 없는 요청: {sub}'})
-        except (HDHomeRunError, PresetValidationError, ValueError) as exc:
+        except (HDHomeRunError, HDHomeRunControlError, PresetValidationError, ValueError) as exc:
             return jsonify({'ret': 'warning', 'msg': str(exc)})
         except Exception as exc:
             logger.exception('[hdhomerun_ff] ajax failed: %s', exc)

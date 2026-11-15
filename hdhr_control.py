@@ -437,8 +437,11 @@ class HDHomeRunControlClient:
         *,
         tuner_count: int,
         settle_seconds: float = 0.75,
+        lock_timeout: float = 5.0,
         streaminfo_timeout: float = 5.0,
         poll_seconds: float = 0.25,
+        progress_callback: Optional[Callable[[int, int, PresetMuxScan], None]] = None,
+        cancelled: Optional[Callable[[], bool]] = None,
     ) -> tuple[PresetMuxScan, ...]:
         """Perform an explicit scan with one leased idle tuner.
 
@@ -449,37 +452,64 @@ class HDHomeRunControlClient:
 
         if not targets:
             return ()
-        if settle_seconds < 0 or streaminfo_timeout < 0 or poll_seconds <= 0:
+        if (
+            settle_seconds < 0
+            or lock_timeout < 0
+            or streaminfo_timeout < 0
+            or poll_seconds <= 0
+        ):
             raise HDHomeRunValidationError("스캔 대기 시간이 올바르지 않습니다.")
+
+        def check_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise HDHomeRunControlError('프리셋 스캔이 취소되었습니다.')
+
+        check_cancelled()
         lease = self.acquire_idle_tuner(tuner_count)
         results: list[PresetMuxScan] = []
         try:
             for target in targets:
+                check_cancelled()
                 self.set(
                     f"/tuner{lease.tuner_index}/channel",
                     f"auto:{int(target.frequency_hz)}",
                     lockkey=lease.lockkey,
                 )
+                # A cable tuner can take a few seconds to obtain lock.  A
+                # single fixed sleep here would incorrectly report many valid
+                # preset frequencies as empty on a slow mux.
+                lock_deadline = time.monotonic() + lock_timeout
                 if settle_seconds:
-                    self._sleep(settle_seconds)
-                status = self.tuner_status(lease.tuner_index)
+                    self._sleep(min(settle_seconds, lock_timeout))
+                while True:
+                    check_cancelled()
+                    status = self.tuner_status(lease.tuner_index)
+                    if status.is_locked or time.monotonic() >= lock_deadline:
+                        break
+                    self._sleep(min(poll_seconds, max(0.0, lock_deadline - time.monotonic())))
                 streaminfo = ""
                 if status.is_locked:
                     deadline = time.monotonic() + streaminfo_timeout
                     previous = None
-                    quiet_until = time.monotonic()
+                    quiet_until = None
                     while True:
+                        check_cancelled()
                         streaminfo = self.get(f"/tuner{lease.tuner_index}/streaminfo")
                         now = time.monotonic()
                         if streaminfo != previous:
                             previous = streaminfo
-                            quiet_until = now + poll_seconds
-                        if now >= quiet_until or now >= deadline:
+                            quiet_until = now + min(1.0, streaminfo_timeout)
+                        _tsid, _onid, services = parse_streaminfo(streaminfo)
+                        # Wait until at least one service has stopped changing.
+                        # An initially empty/partial streaminfo response is
+                        # common immediately after a valid lock.
+                        if services and quiet_until is not None and now >= quiet_until:
+                            break
+                        if now >= deadline:
                             break
                         self._sleep(min(poll_seconds, max(0.0, deadline - now)))
                 tsid, onid, services = parse_streaminfo(streaminfo)
-                results.append(
-                    PresetMuxScan(
+                result = PresetMuxScan(
                         target=target,
                         tuner_index=lease.tuner_index,
                         status=status,
@@ -488,7 +518,14 @@ class HDHomeRunControlClient:
                         services=services,
                         streaminfo=streaminfo,
                     )
-                )
+                results.append(result)
+                if progress_callback is not None:
+                    try:
+                        progress_callback(len(results), len(targets), result)
+                    except Exception:
+                        # A UI-status update must not leave the leased tuner
+                        # tuned because its observer failed.
+                        pass
         finally:
             self.release_tuner(lease)
         return tuple(results)

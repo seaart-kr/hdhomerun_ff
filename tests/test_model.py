@@ -47,6 +47,31 @@ class ChannelStoreTest(unittest.TestCase):
         self.store.replace_device_channels('box', [channel()])
         self.assertEqual([row['channel_id'] for row in self.store.list_channels()], ['hdhr:box:7:abc', 'hdhr:other:1:ghi'])
 
+    def test_preset_scan_rows_are_disabled_and_do_not_replace_native_lineup(self):
+        native = channel()
+        native['raw_data'] = {'source': 'native_lineup'}
+        self.store.replace_device_channels('box', [native], source_scope='native_lineup')
+        scan = {
+            'channel_id': 'hdhrscan:box:267000000:3:abc',
+            'device_id': 'box',
+            'guide_number': '7.1',
+            'name': 'KBS 1',
+            'source_url': '',
+            'enabled': False,
+            'raw_data': {'source': 'preset_scan'},
+        }
+        self.assertEqual(self.store.replace_preset_scan_channels('box', [scan]), 1)
+        self.assertEqual(self.store.summary(), {'total': 2, 'enabled': 1})
+        self.assertEqual(len(self.store.list_channels(enabled_only=True)), 1)
+        with self.assertRaisesRegex(ValueError, '재생 주소가 없는'):
+            self.store.set_enabled(scan['channel_id'], True)
+        self.assertEqual(self.store.summary(), {'total': 2, 'enabled': 1})
+
+        refreshed_native = dict(native)
+        refreshed_native['name'] = 'MBC HD'
+        self.store.replace_device_channels('box', [refreshed_native], source_scope='native_lineup')
+        self.assertEqual(self.store.summary(), {'total': 2, 'enabled': 1})
+
 
 if __name__ == '__main__':
     unittest.main()

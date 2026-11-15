@@ -142,6 +142,7 @@ class PresetScanTest(unittest.TestCase):
             [target],
             tuner_count=1,
             settle_seconds=0,
+            lock_timeout=0,
             streaminfo_timeout=0,
         )
         self.assertEqual(len(results), 1)

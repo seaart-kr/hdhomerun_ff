@@ -72,8 +72,15 @@ class ChannelStore:
         channel_id = str(row.get('channel_id') or '').strip()
         name = str(row.get('name') or '').strip()
         device_id = str(row.get('device_id') or '').strip()
-        if not all([source_url, channel_id, name, device_id]):
-            raise ValueError('channel_id, device_id, name and source_url are required')
+        enabled = 1 if bool(row.get('enabled', True)) else 0
+        raw_data = row.get('raw_data') or {}
+        if not all([channel_id, name, device_id]):
+            raise ValueError('channel_id, device_id and name are required')
+        # A preset scan discovers services but does not hold a tuner lease for
+        # playback.  Such rows intentionally have no stream URL and must stay
+        # disabled until a dedicated playback layer is implemented.
+        if enabled and not source_url:
+            raise ValueError('enabled channels require source_url')
         return {
             'channel_id': channel_id,
             'device_id': device_id,
@@ -84,12 +91,32 @@ class ChannelStore:
             'video_codec': str(row.get('video_codec') or '').strip().lower(),
             'audio_codec': str(row.get('audio_codec') or '').strip().lower(),
             'group_name': str(row.get('group_name') or 'HDHomeRun').strip() or 'HDHomeRun',
-            'enabled': 1 if bool(row.get('enabled', True)) else 0,
-            'raw_data': json.dumps(row.get('raw_data') or {}, ensure_ascii=False, sort_keys=True),
+            'enabled': enabled,
+            'raw_data': json.dumps(raw_data, ensure_ascii=False, sort_keys=True),
         }
 
-    def replace_device_channels(self, device_id: str, channels: Iterable[dict[str, Any]]) -> int:
-        """Upsert a refreshed native lineup, preserving the user's enabled state."""
+    @staticmethod
+    def _row_source(raw_data: str) -> str:
+        try:
+            value = json.loads(raw_data or '{}')
+        except (TypeError, ValueError):
+            return ''
+        return str(value.get('source') or '').strip()
+
+    def replace_device_channels(
+        self,
+        device_id: str,
+        channels: Iterable[dict[str, Any]],
+        *,
+        source_scope: str | None = None,
+        require_disabled: bool = False,
+    ) -> int:
+        """Replace one device's channel rows, optionally scoped by source.
+
+        ``source_scope`` prevents a native HDHomeRun lineup refresh from
+        deleting discovery-only preset-scan rows (and vice versa).  The
+        default retains the original full-device refresh behavior.
+        """
         self.init_db()
         device_id = str(device_id or '').strip()
         if not device_id:
@@ -99,19 +126,26 @@ class ChannelStore:
             raise ValueError('refusing to replace a device lineup with zero channels')
         if any(row['device_id'] != device_id for row in rows):
             raise ValueError('all channels must belong to the selected device')
+        if source_scope and any(self._row_source(row['raw_data']) != source_scope for row in rows):
+            raise ValueError('all channels must use the requested source scope')
+        if require_disabled and any(row['enabled'] for row in rows):
+            raise ValueError('discovery-only channels must stay disabled')
 
         timestamp = now_str()
         incoming_ids = {row['channel_id'] for row in rows}
         with self._connection() as connection:
-            existing = {
-                row['channel_id']: row['enabled']
-                for row in connection.execute(
-                    'SELECT channel_id, enabled FROM hdhomerun_ff_channel WHERE device_id = ?',
-                    (device_id,),
-                )
-            }
+            existing = {}
+            for current in connection.execute(
+                'SELECT channel_id, enabled, raw_data FROM hdhomerun_ff_channel WHERE device_id = ?',
+                (device_id,),
+            ):
+                if source_scope is None or self._row_source(current['raw_data']) == source_scope:
+                    existing[current['channel_id']] = current['enabled']
             for row in rows:
-                row['enabled'] = existing.get(row['channel_id'], row['enabled'])
+                if require_disabled:
+                    row['enabled'] = 0
+                else:
+                    row['enabled'] = existing.get(row['channel_id'], row['enabled'])
                 connection.execute(
                     """
                     INSERT INTO hdhomerun_ff_channel (
@@ -146,6 +180,16 @@ class ChannelStore:
                     (device_id, *sorted(stale_ids)),
                 )
         return len(rows)
+
+    def replace_preset_scan_channels(self, device_id: str, channels: Iterable[dict[str, Any]]) -> int:
+        """Store non-playable services discovered by an explicit preset scan."""
+
+        return self.replace_device_channels(
+            device_id,
+            channels,
+            source_scope='preset_scan',
+            require_disabled=True,
+        )
 
     def list_channels(self, enabled_only: bool = False) -> list[dict[str, Any]]:
         self.init_db()
@@ -191,10 +235,22 @@ class ChannelStore:
 
     def set_enabled(self, channel_id: str, enabled: bool) -> bool:
         self.init_db()
+        channel_id = str(channel_id or '').strip()
+        if not channel_id:
+            return False
         with self._connection() as connection:
+            if enabled:
+                channel = connection.execute(
+                    'SELECT source_url FROM hdhomerun_ff_channel WHERE channel_id = ?',
+                    (channel_id,),
+                ).fetchone()
+                if channel is not None and not str(channel['source_url'] or '').strip():
+                    raise ValueError(
+                        '재생 주소가 없는 프리셋 발견 결과는 활성화할 수 없습니다.'
+                    )
             updated = connection.execute(
                 'UPDATE hdhomerun_ff_channel SET enabled = ?, updated_time = ? WHERE channel_id = ?',
-                (1 if enabled else 0, now_str(), str(channel_id or '').strip()),
+                (1 if enabled else 0, now_str(), channel_id),
             ).rowcount
         return updated == 1
 
