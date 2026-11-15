@@ -45,6 +45,14 @@
           장비 제공 lineup은 변경하지 않습니다. 발견 서비스는 튜너 임대형 재생이 아직 연결되지 않아 <strong>비활성</strong>으로만 저장되며 M3U에는 추가되지 않습니다.
         </div>
         <small class="form-text text-muted">프리셋은 장비의 전역 channel map을 자동 변경하지 않습니다.</small>
+        <div class="border rounded p-3 mt-3" id="hdhr_scan_progress" aria-live="polite" aria-atomic="true">
+          <div class="d-flex justify-content-between mb-2"><strong id="hdhr_scan_state">스캔 상태 확인 중</strong><span id="hdhr_scan_percent">0%</span></div>
+          <div class="progress" style="height:22px"><div id="hdhr_scan_bar" class="progress-bar" role="progressbar" aria-label="주파수 스캔 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width:0%"></div></div>
+          <div class="mt-2"><span id="hdhr_scan_muxes">주파수 0 / 0개 완료</span><span class="ml-3" id="hdhr_scan_services">발견 서비스 0개</span></div>
+          <div class="small text-muted mt-1" id="hdhr_scan_message"></div>
+          <div class="small text-muted mt-1" id="hdhr_scan_connection"></div>
+          <button type="button" class="btn btn-sm btn-outline-primary mt-2 d-none" id="hdhr_scan_channels_btn">발견 채널 목록 새로고침</button>
+        </div>
         <pre id="hdhr_scan_result" class="mt-3 mb-0" style="white-space:pre-wrap"></pre>
       </div>
     </div>
@@ -93,10 +101,37 @@
 (function(){
   var root='/' + {{ package_name|tojson }} + '/ajax/' + {{ ajax_sub|tojson }} + '/';
   var form=$('#hdhr_setting_form');
+  var scanTimer=null;
+  var scanRequest=null;
+  var scanActionPending=false;
+  function scheduleScanStatus(delay) {
+    window.clearTimeout(scanTimer);
+    scanTimer=window.setTimeout(scanStatus, delay);
+  }
+  function renderScan(scan) {
+    var completed=Math.max(0, Number(scan.completed_muxes) || 0);
+    var total=Math.max(0, Number(scan.total_muxes) || 0);
+    var percent=total ? Math.min(100, Math.floor(completed*100/total)) : 0;
+    var labels={idle:'스캔 대기', running:'스캔 진행 중', complete:'스캔 완료', complete_no_services:'스캔 완료 · 발견 서비스 없음', cancelled:'스캔 취소됨', failed:'스캔 실패'};
+    $('#hdhr_scan_state').text(labels[scan.state] || '스캔 상태 확인 중');
+    $('#hdhr_scan_percent').text(percent+'%');
+    $('#hdhr_scan_bar').css('width', percent+'%').attr('aria-valuenow',percent)
+      .toggleClass('progress-bar-striped progress-bar-animated', !!scan.running)
+      .toggleClass('bg-success', scan.state==='complete' || scan.state==='complete_no_services')
+      .toggleClass('bg-danger', scan.state==='failed');
+    $('#hdhr_scan_muxes').text('주파수 '+completed+' / '+total+'개 완료');
+    $('#hdhr_scan_services').text('발견 서비스 '+(Number(scan.found_services) || 0)+'개');
+    var current=scan.running && total>completed ? '현재 '+(completed+1)+'번째 주파수 탐색 중. ' : '';
+    $('#hdhr_scan_message').text(current+(scan.message || ''));
+    $('#hdhr_scan_connection').text('마지막 확인: '+new Date().toLocaleTimeString()+(scan.running ? ' · 1.5초마다 갱신' : ''));
+    $('#hdhr_scan_btn, #hdhr_preset_id').prop('disabled', !!scan.running || scanActionPending);
+    $('#hdhr_scan_cancel_btn').prop('disabled', !scan.running || scanActionPending);
+    $('#hdhr_scan_channels_btn').toggleClass('d-none', !(Number(scan.stored_channels)>0 && !scan.running));
+  }
   function call(sub, target, extra) {
     var data=form.serialize();
     if (extra) data += '&' + $.param(extra);
-    $.ajax({url:root+sub, type:'POST', data:data}).done(function(ret){
+    return $.ajax({url:root+sub, type:'POST', data:data, dataType:'json', timeout:20000}).done(function(ret){
       $(target).text(JSON.stringify(ret, null, 2));
       if (sub === 'import_native_lineup' && ret.notice) {
         $('#hdhr_native_notice').removeClass('d-none').text(ret.notice + ' 채널 표는 새로고침하면 갱신됩니다.');
@@ -105,11 +140,24 @@
     }).fail(function(xhr){ $(target).text(xhr.responseText || '요청 실패'); });
   }
   function scanStatus() {
-    $.ajax({url:root+'scan_preset_status', type:'POST', data:form.serialize()}).done(function(ret){
-      var scan=ret.scan || {};
-      $('#hdhr_scan_result').text(JSON.stringify(ret, null, 2));
-      if (scan.running) window.setTimeout(scanStatus, 1500);
-    }).fail(function(xhr){ $('#hdhr_scan_result').text(xhr.responseText || '스캔 상태 확인 실패'); });
+    if (scanRequest || scanActionPending) {scheduleScanStatus(1500); return;}
+    scanRequest=$.ajax({url:root+'scan_preset_status', type:'POST', dataType:'json', timeout:15000}).done(function(ret){
+      if (ret.scan) renderScan(ret.scan);
+      else $('#hdhr_scan_connection').text(ret.msg || '스캔 상태를 확인하지 못했습니다. 다시 확인 중입니다.');
+      scheduleScanStatus(ret.scan && ret.scan.running ? 1500 : 5000);
+    }).fail(function(){
+      $('#hdhr_scan_connection').text('상태 확인 연결이 지연되고 있습니다. 5초 뒤 다시 확인합니다.');
+      scheduleScanStatus(5000);
+    }).always(function(){scanRequest=null;});
+  }
+  function scanAction(sub, extra) {
+    scanActionPending=true;
+    window.clearTimeout(scanTimer);
+    if (scanRequest) {scanRequest.abort();scanRequest=null;}
+    $('#hdhr_scan_btn, #hdhr_scan_cancel_btn').prop('disabled',true);
+    call(sub,'#hdhr_scan_result',extra).done(function(ret){
+      if (ret.scan) renderScan(ret.scan);
+    }).always(function(){scanActionPending=false;scheduleScanStatus(100);});
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
   $('#hdhr_lineup_btn').on('click', function(){
@@ -120,14 +168,13 @@
   $('#hdhr_scan_plan_btn').on('click', function(){call('preview_scan_plan','#hdhr_scan_result');});
   $('#hdhr_scan_btn').on('click', function(){
     if (window.confirm('선택한 프리셋 주파수를 실제로 스캔합니다. 유휴 HDHomeRun 튜너가 없으면 안전하게 시작하지 않습니다. 발견 결과는 아직 재생용 M3U에 추가되지 않습니다. 계속할까요?')) {
-      call('scan_preset','#hdhr_scan_result', {confirm_preset_scan: 'yes'});
-      window.setTimeout(scanStatus, 800);
+      scanAction('scan_preset', {confirm_preset_scan: 'yes'});
     }
   });
   $('#hdhr_scan_cancel_btn').on('click', function(){
-    call('cancel_preset_scan','#hdhr_scan_result');
-    window.setTimeout(scanStatus, 400);
+    scanAction('cancel_preset_scan');
   });
+  $('#hdhr_scan_channels_btn').on('click', function(){location.reload();});
   $('#hdhr_save_btn').on('click', function(){call('setting_save','#hdhr_device_result');});
   $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});
   scanStatus();
