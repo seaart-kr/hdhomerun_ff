@@ -44,6 +44,7 @@ class HLSManager:
 
     _lock = threading.RLock()
     _streams: Dict[str, Dict[str, object]] = {}
+    _janitor_stop = None
 
     @classmethod
     def configure(
@@ -281,6 +282,7 @@ class HLSManager:
         upstream_url: object,
         output_profile: object = "copy",
         consumer_id: object = "",
+        source_factory=None,
     ) -> Dict[str, object]:
         """Start or reuse a shared FFmpeg process and return its HLS playlist.
 
@@ -303,8 +305,12 @@ class HLSManager:
                 if state:
                     cls._stop_state_locked(key, clear=True)
                 try:
+                    cleanup = None
                     cls._safe_clear_directory(directory)
                     os.makedirs(directory, mode=0o700, exist_ok=True)
+                    if source_factory is not None:
+                        source, cleanup = source_factory()
+                        source = cls._validate_upstream_url(source)
                     process = subprocess.Popen(
                         cls._build_command(source, directory, profile),
                         stdin=subprocess.DEVNULL,
@@ -312,11 +318,13 @@ class HLSManager:
                         stderr=subprocess.DEVNULL,
                         close_fds=True,
                     )
-                except (OSError, ValueError) as error:
+                except Exception:
+                    if cleanup is not None:
+                        cleanup()
                     return {
                         "ret": "warning",
                         "status": 502,
-                        "msg": f"HLS encoder start failed: {error}",
+                        "msg": "HLS 원본 연결 또는 인코더 시작에 실패했습니다. 유휴 튜너와 원본 주소를 확인하세요.",
                     }
                 state = {
                     "process": process,
@@ -324,8 +332,10 @@ class HLSManager:
                     "channel_id": channel,
                     "output_profile": profile,
                     "last_access": now,
+                    "cleanup": cleanup,
                 }
                 cls._streams[key] = state
+                cls._start_janitor_locked()
 
         deadline = time.monotonic() + cls.START_TIMEOUT
         while time.monotonic() < deadline:
@@ -345,7 +355,19 @@ class HLSManager:
                     return {"ret": "warning", "status": 502, "msg": "HLS encoder stopped"}
             time.sleep(0.1)
 
+        with cls._lock:
+            cls._stop_state_locked(key, clear=True)
         return {"ret": "warning", "status": 504, "msg": "HLS encoder start timed out"}
+
+    @classmethod
+    def _start_janitor_locked(cls):
+        if cls._janitor_stop is not None and not cls._janitor_stop.is_set():
+            return
+        stop = cls._janitor_stop = threading.Event()
+        def reap():
+            while not stop.wait(5):
+                cls.cleanup()
+        threading.Thread(target=reap, name='hdhomerun-hls-cleanup', daemon=True).start()
 
     @classmethod
     def _is_alive(cls, state: Dict[str, object]) -> bool:
@@ -368,6 +390,12 @@ class HLSManager:
                     process.wait(timeout=2)
                 except Exception:
                     pass
+        cleanup = state.get('cleanup')
+        if cleanup is not None:
+            try:
+                cleanup()
+            except Exception:
+                pass
         if clear:
             try:
                 cls._safe_clear_directory(str(state.get("directory") or ""))
@@ -399,6 +427,8 @@ class HLSManager:
     @classmethod
     def stop_all(cls) -> None:
         with cls._lock:
+            if cls._janitor_stop is not None:
+                cls._janitor_stop.set()
             for key in list(cls._streams):
                 cls._stop_state_locked(key, clear=True)
 

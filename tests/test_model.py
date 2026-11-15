@@ -117,6 +117,23 @@ class ChannelStoreTest(unittest.TestCase):
         self.assertTrue(rows[0]['selected'])
         self.assertFalse(rows[0]['enabled'])
 
+    def test_device_profile_and_learned_muxes_survive_restart(self):
+        self.store.update_device_profile('box',learned_muxes=[{'frequency_hz':441000000,'modulation':'VSB/8'}])
+        self.store.update_device_profile('box',http_stream={'suffix':'','firmware':'20260326'})
+        reopened=ChannelStore(self.store.path)
+        self.assertEqual(reopened.device_profile('box')['http_stream']['suffix'],'')
+        self.assertEqual(reopened.learned_preset('box')['muxes'],[{'frequency_hz':441000000,'modulation':'VSB/8'}])
+        self.assertEqual(reopened.learned_preset('other')['muxes'],[])
+
+    def test_selected_raw_services_enter_playlist_except_control_or_encrypted(self):
+        a=self.scan_channel('KBS 1','1');a['raw_data']['lock']='8vsb';a['raw_data']['frequency_hz']=441000000
+        b=self.scan_channel('Program 2','2');b['raw_data']['flags']=['control']
+        c=self.scan_channel('Encrypted TV','3');c['raw_data']['flags']=['encrypted']
+        self.store.replace_preset_scan_channels('box',[a,b,c])
+        self.assertEqual([c['name'] for c in self.store.playback_channels()],['KBS 1'])
+        self.store.set_selected(a['channel_id'],False)
+        self.assertEqual(self.store.playback_channels(),[])
+
 
 if __name__ == '__main__':
     unittest.main()

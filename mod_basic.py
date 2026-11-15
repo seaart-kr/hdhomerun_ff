@@ -15,8 +15,9 @@ from .hdhomerun import HDHomeRunClient, HDHomeRunError
 from .hls_manager import HLSManager
 from .model import ChannelStore
 from .playlist import build_shyni_m3u, normalise_output_profile
-from .preset import PresetValidationError, list_bundled_presets, load_bundled_preset
+from .preset import PresetValidationError, list_bundled_presets, load_bundled_preset, korean_full_scan_preset, dump_preset
 from .preset_scan_runner import PresetScanRunner
+from .raw_stream import RawStreamSession, probe_http_format
 from .setup import P, logger
 from .task import device_summary, snapshot_channel_rows
 
@@ -40,8 +41,50 @@ def _store():
     return ChannelStore()
 
 
+def _scan_plan(req):
+    mode = str(req.form.get('basic_hdhomerun_scan_mode') or P.ModelSetting.get('basic_hdhomerun_scan_mode') or 'auto')
+    device_id = P.ModelSetting.get('basic_hdhomerun_device_id') or ''
+    learned = _store().learned_preset(device_id)
+    if mode == 'fast' or (mode == 'auto' and learned['muxes']):
+        if not learned['muxes']:
+            raise ValueError('저장된 수신 주파수가 없습니다. 한국 전체 탐색을 먼저 실행하세요.')
+        preset = learned
+    elif mode in {'auto', 'full_kr'}:
+        preset = korean_full_scan_preset()
+    elif mode == 'preset':
+        preset = load_bundled_preset(str(req.form.get('basic_hdhomerun_preset_id') or P.ModelSetting.get('basic_hdhomerun_preset_id') or ''))
+    else:
+        raise ValueError('스캔 방식을 확인하세요.')
+    return mode, preset, HDHomeRunClient.build_initial_scan_plan(preset)
+
+
+def _playback_device():
+    device = HDHomeRunClient(P.ModelSetting.get('basic_hdhomerun_base_url') or '').fetch_discover()
+    if device.device_id != str(P.ModelSetting.get('basic_hdhomerun_device_id') or '').lower():
+        raise ValueError('장비 확인을 다시 실행하세요.')
+    return device
+
+
+def _source_format(device, channel, force=False):
+    mode = str(P.ModelSetting.get('basic_hdhomerun_stream_format') or 'auto')
+    profile = _store().device_profile(device.device_id)
+    cache = profile.get('http_stream', {})
+    if not force and cache.get('firmware') == device.firmware_version and cache.get('base_url') == device.base_url and cache.get('mode') == mode and cache.get('suffix') in {'', '.mpeg'}:
+        return cache
+    result = probe_http_format(device.base_url, device.tuner_count, channel, mode)
+    result.update(firmware=device.firmware_version, base_url=device.base_url, mode=mode)
+    _store().update_device_profile(device.device_id, http_stream=result)
+    return result
+
+
 def _output_profile():
     return normalise_output_profile(P.ModelSetting.get('basic_hls_output_profile') or 'copy')
+
+
+def _playlist_channels():
+    source = P.ModelSetting.get('basic_hdhomerun_playlist_source') or 'scan'
+    return [c for c in _store().playback_channels()
+            if (c['raw_data'].get('source') == 'preset_scan') == (source == 'scan')]
 
 
 def _hls_options():
@@ -84,6 +127,9 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_device_id': '',
         'basic_hdhomerun_device_name': '',
         'basic_hdhomerun_preset_id': 'kr-cable-cmb-v1',
+        'basic_hdhomerun_scan_mode': 'auto',
+        'basic_hdhomerun_stream_format': 'auto',
+        'basic_hdhomerun_playlist_source': 'scan',
         'basic_hls_output_profile': 'copy',
         'basic_hls_idle_timeout': '60',
     }
@@ -129,6 +175,8 @@ class ModuleBasic(PluginModuleBase):
             'presets': list_bundled_presets(),
             'channels': channels,
             'selected_channel_count': sum(channel['selected'] for channel in channels),
+            'learned_mux_count': len(_store().learned_preset(settings.get('basic_hdhomerun_device_id') or '')['muxes']),
+            'scan_export_url': _api_url(f'/{P.package_name}/api/scan_preset.json'),
             'channel_summary': _store().summary(),
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
@@ -191,13 +239,11 @@ class ModuleBasic(PluginModuleBase):
                 })
 
             if sub == 'preview_scan_plan':
-                preset_id = str(req.form.get('basic_hdhomerun_preset_id') or P.ModelSetting.get('basic_hdhomerun_preset_id') or '')
-                preset = load_bundled_preset(preset_id)
-                plan = HDHomeRunClient.build_initial_scan_plan(preset)
+                mode, preset, plan = _scan_plan(req)
                 return jsonify({
                     'ret': 'success',
                     'msg': (
-                        f'{preset["name"]} 프리셋의 {len(plan.targets)}개 mux 목록입니다. '
+                        f'{preset["name"]}: {len(plan.targets)}개 주파수/변조 조합입니다. '
                         '실제 스캔은 아래의 명시적 시작 버튼에서만 유휴 튜너를 확보해 실행됩니다.'
                     ),
                     'preset': {'id': plan.preset_id, 'delivery_system': plan.delivery_system},
@@ -214,13 +260,13 @@ class ModuleBasic(PluginModuleBase):
                 expected_device_id = str(P.ModelSetting.get('basic_hdhomerun_device_id') or '').strip().lower()
                 if not base_url or not expected_device_id:
                     raise HDHomeRunError('장비 주소를 저장한 뒤 먼저 장비 확인을 실행하세요.')
-                preset_id = str(req.form.get('basic_hdhomerun_preset_id') or P.ModelSetting.get('basic_hdhomerun_preset_id') or '')
-                preset = load_bundled_preset(preset_id)
-                plan = HDHomeRunClient.build_initial_scan_plan(preset)
+                mode, preset, plan = _scan_plan(req)
                 device = HDHomeRunClient(base_url).fetch_discover()
                 if device.device_id != expected_device_id:
                     raise HDHomeRunError('저장된 장비와 현재 주소의 장비가 다릅니다. 장비 확인을 다시 실행하세요.')
-                P.ModelSetting.set('basic_hdhomerun_preset_id', preset['id'])
+                P.ModelSetting.set('basic_hdhomerun_scan_mode', mode)
+                if mode == 'preset':
+                    P.ModelSetting.set('basic_hdhomerun_preset_id', preset['id'])
                 status = _PRESET_SCAN_RUNNER.start(
                     base_url=base_url,
                     device_id=device.device_id,
@@ -231,17 +277,17 @@ class ModuleBasic(PluginModuleBase):
                     'ret': 'success',
                     'msg': (
                         f'{preset["name"]} 프리셋 스캔을 시작했습니다. 유휴 튜너 1개만 사용하며, '
-                        '발견 결과는 재생 불가 상태로만 저장됩니다.'
+                        '발견한 주파수는 빠른 재탐색용으로 저장됩니다.'
                     ),
                     'scan': status,
-                    'raw_playback_connected': False,
+                    'raw_playback_connected': True,
                 })
 
             if sub == 'scan_preset_status':
                 return jsonify({
                     'ret': 'success',
                     'scan': _PRESET_SCAN_RUNNER.status(),
-                    'raw_playback_connected': False,
+                    'raw_playback_connected': True,
                 })
 
             if sub == 'cancel_preset_scan':
@@ -271,6 +317,17 @@ class ModuleBasic(PluginModuleBase):
                     'selected': selected,
                 })
 
+            if sub == 'probe_source_format':
+                self._save_settings(req)
+                device = _playback_device()
+                channels = [c for c in _store().playback_channels()
+                            if c['device_id'] == device.device_id and c['raw_data'].get('source') == 'preset_scan']
+                if not channels:
+                    raise ValueError('먼저 이름이 있는 일반 스캔 채널을 사용 체크하세요.')
+                result = _source_format(device, channels[0], force=True)
+                return jsonify({'ret':'success', 'msg':'실제 MPEG-TS 영상 수신을 확인했습니다.',
+                                'format':result, 'channel_name':channels[0]['name']})
+
             if sub == 'diagnostics':
                 return jsonify({'ret': 'success', 'diagnostics': ffmpeg_capabilities()})
 
@@ -283,6 +340,12 @@ class ModuleBasic(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
+            if sub == 'scan_preset.json':
+                preset = _store().learned_preset(P.ModelSetting.get('basic_hdhomerun_device_id') or '')
+                if not preset['muxes']:
+                    return Response('아직 수신 주파수가 없습니다.', status=404)
+                return Response(dump_preset(preset), mimetype='application/json', headers={
+                    'Content-Disposition':'attachment; filename=hdhomerun-learned.json'})
             if sub in {'m3u_shyni', 'm3u_shyni_copy', 'm3u_shyni_mobile'}:
                 profile = _output_profile()
                 if sub == 'm3u_shyni_copy':
@@ -290,7 +353,7 @@ class ModuleBasic(PluginModuleBase):
                 elif sub == 'm3u_shyni_mobile':
                     profile = 'mobile_cpu'
                 text = build_shyni_m3u(
-                    _store().list_channels(enabled_only=True),
+                    _playlist_channels(),
                     request.host_url.rstrip('/'),
                     P.package_name,
                     api_key=str(req.args.get('apikey') or '').strip(),
@@ -310,13 +373,23 @@ class ModuleBasic(PluginModuleBase):
                 channel_id = str(req.args.get('i') or '').strip()
                 profile = normalise_output_profile(req.args.get('p') or _output_profile())
                 consumer_id = _consumer_id(req)
-                channel = _store().get_channel(channel_id)
+                channel = next((c for c in _playlist_channels() if c['channel_id'] == channel_id), None)
                 if not channel:
                     return Response('channel not found', status=404, mimetype='text/plain')
                 _hls_options()
                 playlist = HLSManager.get_playlist(channel_id, profile, consumer_id)
                 if not playlist:
-                    result = HLSManager.ensure_stream(channel_id, channel['source_url'], profile, consumer_id)
+                    if channel['raw_data'].get('source') == 'preset_scan':
+                        device = _playback_device()
+                        if channel['device_id'] != device.device_id:
+                            raise ValueError('현재 장비의 채널이 아닙니다.')
+                        stream_format = _source_format(device, channel)
+                        def source_factory():
+                            session = RawStreamSession(device.base_url, device.tuner_count, channel, stream_format['suffix'])
+                            return session.open(), session.close
+                        result = HLSManager.ensure_stream(channel_id, device.base_url, profile, consumer_id, source_factory=source_factory)
+                    else:
+                        result = HLSManager.ensure_stream(channel_id, channel['source_url'], profile, consumer_id)
                     if result.get('ret') != 'success':
                         return Response(result.get('msg') or 'HLS unavailable', status=int(result.get('status') or 502), mimetype='text/plain')
                     playlist = str(result.get('playlist') or '')

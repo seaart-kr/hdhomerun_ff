@@ -229,3 +229,17 @@ def dump_preset(preset: Mapping[str, Any]) -> str:
 
     return json.dumps(validate_preset(preset), ensure_ascii=False, indent=2, sort_keys=False) + "\n"
 
+
+def korean_full_scan_preset() -> dict[str, Any]:
+    """Korean RF grid, testing VSB and QAM explicitly at every frequency."""
+    ranges = ((2, 4, 57_000_000), (5, 6, 79_000_000),
+              (7, 13, 177_000_000), (14, 22, 123_000_000), (23, 153, 219_000_000))
+    frequencies = sorted({start + (ch-first)*6_000_000
+                          for first, last, start in ranges for ch in range(first, last+1)})
+    return validate_preset({
+        'version': 1, 'id': 'kr-full-auto', 'name': '한국 전체 자동 탐색',
+        'country': 'KR', 'delivery_system': 'ATSC-T', 'source': 'cable',
+        'muxes': [{'frequency_hz': f, 'modulation': m}
+                  for f in frequencies for m in ('VSB/8', 'QAM/256')],
+    })
+

@@ -29,22 +29,32 @@
     </div>
 
     <div class="card mb-3">
-      <div class="card-header">2. 한국 주파수 프리셋 기반 스캔</div>
+      <div class="card-header">2. 한국 자동 탐색 / 빠른 재탐색</div>
       <div class="card-body">
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">탐색 방식</label>
+          <div class="col-sm-9"><select class="form-control" name="basic_hdhomerun_scan_mode" id="hdhr_scan_mode">
+            {% for value, label in [('auto','자동 · 처음에는 한국 전체, 이후에는 빠른 재탐색'),('full_kr','한국 전체 탐색 · 152개 주파수에서 VSB/QAM 확인'),('fast','저장된 수신 주파수만 빠르게 재탐색'),('preset','수동 프리셋으로 탐색')] %}
+            <option value="{{ value }}" {% if arg.get('basic_hdhomerun_scan_mode', 'auto') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}</select>
+            <small class="form-text text-muted">저장된 수신 주파수/변조: {{ learned_mux_count }}개. 채널이 추가되거나 이사한 경우 한국 전체 탐색을 선택하세요.</small>
+          </div>
+        </div>
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">프리셋</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hdhomerun_preset_id" id="hdhr_preset_id">
             {% for preset in presets %}<option value="{{ preset.id }}" {% if arg.get('basic_hdhomerun_preset_id') == preset.id %}selected{% endif %}>{{ preset.name }} — {{ preset.mux_count }} mux</option>{% endfor %}
           </select></div>
         </div>
-        <button type="button" class="btn btn-outline-secondary" id="hdhr_scan_plan_btn">프리셋 주파수 목록 확인</button>
-        <button type="button" class="btn btn-warning ml-2" id="hdhr_scan_btn">프리셋 실제 스캔 시작</button>
+        <button type="button" class="btn btn-outline-secondary" id="hdhr_scan_plan_btn">탐색 계획 확인</button>
+        <button type="button" class="btn btn-warning ml-2" id="hdhr_scan_btn">채널 탐색 시작</button>
         <button type="button" class="btn btn-outline-danger ml-2" id="hdhr_scan_cancel_btn">스캔 취소</button>
+        {% if learned_mux_count %}<a class="btn btn-outline-secondary ml-2" href="{{ scan_export_url }}">발견 주파수 내려받기</a>{% endif %}
         <div class="alert alert-info py-2 mt-3 mb-2" role="alert">
           실제 스캔은 이 버튼을 눌렀을 때만 실행되며, 다른 재생에 쓰이지 않는 유휴 튜너 1개를 잠시 사용합니다.
-          이름이 수신된 채널은 아래 목록에서 기본으로 사용 체크됩니다. 스캔 채널의 재생 연결은 준비 중이며, 현재 M3U에는 재생 주소가 있는 채널만 제공됩니다.
+          이름이 수신된 채널은 기본으로 사용 체크됩니다. 선택한 일반 채널은 FF를 통해 Shyni에서 재생하며, 암호화·제어·데이터 없음 서비스는 M3U에서 제외합니다.
         </div>
-        <small class="form-text text-muted">프리셋은 장비의 전역 channel map을 자동 변경하지 않습니다.</small>
+        <small class="form-text text-muted">한국 전체 탐색은 프리셋 파일 없이 실행됩니다. 발견된 주파수와 변조 방식은 이 FF에 저장됩니다.</small>
         <div class="border rounded p-3 mt-3" id="hdhr_scan_progress" aria-live="polite" aria-atomic="true">
           <div class="d-flex justify-content-between mb-2"><strong id="hdhr_scan_state">스캔 상태 확인 중</strong><span id="hdhr_scan_percent">0%</span></div>
           <div class="progress" style="height:22px"><div id="hdhr_scan_bar" class="progress-bar" role="progressbar" aria-label="주파수 스캔 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" style="width:0%"></div></div>
@@ -60,6 +70,23 @@
     <div class="card mb-3">
       <div class="card-header">3. Shyni 재생 목록</div>
       <div class="card-body">
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">M3U 채널 출처</label>
+          <div class="col-sm-9"><select class="form-control" name="basic_hdhomerun_playlist_source">
+            <option value="scan" {% if arg.get('basic_hdhomerun_playlist_source', 'scan') == 'scan' %}selected{% endif %}>스캔한 채널 중 사용 선택한 일반 채널</option>
+            <option value="native" {% if arg.get('basic_hdhomerun_playlist_source') == 'native' %}selected{% endif %}>장비 제공 native lineup</option>
+          </select></div>
+        </div>
+        <div class="form-group row">
+          <label class="col-sm-3 col-form-label">홈런 원본 주소 형식</label>
+          <div class="col-sm-9"><select class="form-control" name="basic_hdhomerun_stream_format">
+            {% for value, label in [('auto','자동 확인 · 영상 데이터를 받아 호환 형식 선택'),('none','확장자 없음'),('mpeg','.mpeg 확장자 사용')] %}
+            <option value="{{ value }}" {% if arg.get('basic_hdhomerun_stream_format', 'auto') == value %}selected{% endif %}>{{ label }}</option>
+            {% endfor %}</select><small class="form-text text-muted">자동 확인 결과는 장비·펌웨어별로 기억하며 펌웨어가 바뀌면 다시 확인합니다.</small>
+            <button type="button" class="btn btn-outline-secondary mt-2" id="hdhr_source_probe_btn">원본 주소 호환성 확인</button>
+            <pre id="hdhr_source_result" class="mt-2 mb-0" style="white-space:pre-wrap"></pre>
+          </div>
+        </div>
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">기본 출력</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile">
@@ -93,7 +120,7 @@
         <td>{% if channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% else %}{{ channel.name }}{% endif %}</td>
         <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
         <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
-        <td>{% if not channel.source_url %}재생 연결 준비 중{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
+        <td>{% if channel.raw_data.get('source') == 'preset_scan' %}사용 선택 시 FF 재생{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
       </tr>{% endfor %}
       {% if not channels %}<tr><td colspan="7" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
@@ -129,12 +156,12 @@
       .toggleClass('progress-bar-striped progress-bar-animated', !!scan.running)
       .toggleClass('bg-success', scan.state==='complete' || scan.state==='complete_no_services')
       .toggleClass('bg-danger', scan.state==='failed');
-    $('#hdhr_scan_muxes').text('주파수 '+completed+' / '+total+'개 완료');
+    $('#hdhr_scan_muxes').text('주파수/변조 '+completed+' / '+total+'개 완료');
     $('#hdhr_scan_services').text('발견 서비스 '+(Number(scan.found_services) || 0)+'개');
     var current=scan.running && total>completed ? '현재 '+(completed+1)+'번째 주파수 탐색 중. ' : '';
     $('#hdhr_scan_message').text(current+(scan.message || ''));
     $('#hdhr_scan_connection').text('마지막 확인: '+new Date().toLocaleTimeString()+(scan.running ? ' · 1.5초마다 갱신' : ''));
-    $('#hdhr_scan_btn, #hdhr_preset_id').prop('disabled', !!scan.running || scanActionPending);
+    $('#hdhr_scan_btn, #hdhr_preset_id, #hdhr_scan_mode').prop('disabled', !!scan.running || scanActionPending);
     $('#hdhr_scan_cancel_btn').prop('disabled', !scan.running || scanActionPending);
     $('#hdhr_scan_channels_btn').toggleClass('d-none', !(Number(scan.stored_channels)>0 && !scan.running));
   }
@@ -185,7 +212,7 @@
   });
   $('#hdhr_scan_plan_btn').on('click', function(){call('preview_scan_plan','#hdhr_scan_result');});
   $('#hdhr_scan_btn').on('click', function(){
-    if (window.confirm('선택한 프리셋 주파수를 실제로 스캔합니다. 유휴 HDHomeRun 튜너가 없으면 안전하게 시작하지 않습니다. 발견 결과는 아직 재생용 M3U에 추가되지 않습니다. 계속할까요?')) {
+    if (window.confirm('선택한 방식으로 채널을 탐색합니다. 유휴 튜너 1개를 사용하고, 전체 탐색은 시간이 더 걸립니다. 시작할까요?')) {
       scanAction('scan_preset', {confirm_preset_scan: 'yes'});
     }
   });
@@ -215,6 +242,7 @@
   });
   $('#hdhr_save_btn').on('click', function(){call('setting_save','#hdhr_device_result');});
   $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});
+  $('#hdhr_source_probe_btn').on('click', function(){call('probe_source_format','#hdhr_source_result');});
   scanStatus();
 })();
 </script>

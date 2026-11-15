@@ -71,6 +71,9 @@ class ChannelStore:
             columns = {row['name'] for row in connection.execute('PRAGMA table_info(hdhomerun_ff_channel)')}
             if 'selected' not in columns:
                 connection.execute('ALTER TABLE hdhomerun_ff_channel ADD COLUMN selected INTEGER DEFAULT NULL')
+            connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_device (
+                device_id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT '{}'
+            )''')
             connection.execute(
                 """
                 CREATE INDEX IF NOT EXISTS idx_hdhomerun_ff_channel_device
@@ -202,6 +205,59 @@ class ChannelStore:
             source_scope='preset_scan',
             require_disabled=True,
         )
+
+    def device_profile(self, device_id: str) -> dict[str, Any]:
+        self.init_db()
+        with self._connection() as connection:
+            row = connection.execute('SELECT profile FROM hdhomerun_ff_device WHERE device_id = ?',
+                                     (device_id,)).fetchone()
+        return json.loads(row['profile']) if row else {}
+
+    def update_device_profile(self, device_id: str, **updates: Any) -> None:
+        self.init_db()
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            row = connection.execute('SELECT profile FROM hdhomerun_ff_device WHERE device_id = ?',
+                                     (device_id,)).fetchone()
+            profile = json.loads(row['profile']) if row else {}
+            profile.update(updates)
+            connection.execute('''INSERT INTO hdhomerun_ff_device(device_id, profile) VALUES (?, ?)
+                ON CONFLICT(device_id) DO UPDATE SET profile=excluded.profile''',
+                (device_id, json.dumps(profile, ensure_ascii=False)))
+
+    def learned_preset(self, device_id: str) -> dict[str, Any]:
+        """Use completed-scan RF pairs, including installations upgraded from 0.2."""
+        pairs = set()
+        profile = self.device_profile(device_id)
+        for m in profile.get('learned_muxes', []):
+            pairs.add((int(m['frequency_hz']), m['modulation']))
+        if not pairs:
+            for row in self.list_channels():
+                raw = row['raw_data']
+                if row['device_id'] == device_id and raw.get('source') == 'preset_scan':
+                    modulation = {'8vsb':'VSB/8', 'qam256':'QAM/256'}.get(raw.get('lock'))
+                    if modulation:
+                        pairs.add((int(raw['frequency_hz']), modulation))
+        return {'version': 1, 'id': 'learned-device', 'name': '발견 주파수 빠른 재탐색',
+                'country': 'KR', 'delivery_system': 'ATSC-T', 'source': 'cable',
+                'muxes': [{'frequency_hz': f, 'modulation': m} for f,m in sorted(pairs)]}
+
+    def playback_channels(self) -> list[dict[str, Any]]:
+        """Selected raw services are tuned on demand, not assigned a stale URL."""
+        result = []
+        for channel in self.list_channels():
+            raw = channel['raw_data']
+            if raw.get('source') == 'preset_scan':
+                if not channel['selected'] or set(raw.get('flags', [])) & {'control','no data','encrypted'}:
+                    continue
+                channel['enabled'] = True
+            elif not channel['enabled']:
+                continue
+            result.append(channel)
+        return result
+
+    def playback_channel(self, channel_id: str) -> dict[str, Any] | None:
+        return next((c for c in self.playback_channels() if c['channel_id'] == channel_id), None)
 
     def list_channels(self, enabled_only: bool = False) -> list[dict[str, Any]]:
         self.init_db()

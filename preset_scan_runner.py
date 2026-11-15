@@ -133,12 +133,15 @@ class PresetScanRunner:
                 )
                 return
             stored = self._store_factory().replace_preset_scan_channels(device_id, rows)
+            learned = [{'frequency_hz': s.target.frequency_hz, 'modulation': s.target.modulation}
+                       for s in scans if s.status.is_locked and s.services]
+            self._store_factory().update_device_profile(device_id, learned_muxes=learned)
             self._finish(
                 state='complete',
                 stored_channels=int(stored),
                 message=(
-                    f'프리셋 스캔에서 서비스 {len(rows)}개를 발견해 비활성 발견 목록으로 저장했습니다. '
-                    '튜너 임대형 재생은 아직 연결되지 않았으므로 M3U에는 추가되지 않았습니다.'
+                    f'서비스 {len(rows)}개와 수신 주파수/변조 {len(learned)}개를 저장했습니다. '
+                    '사용 체크된 일반 채널은 Shyni M3U에서 재생할 수 있습니다.'
                 ),
             )
         except HDHomeRunControlError as exc:

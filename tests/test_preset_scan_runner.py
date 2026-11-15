@@ -1,5 +1,6 @@
 import time
 import unittest
+from types import SimpleNamespace
 
 from hdhomerun import ScanTarget
 from preset_scan_runner import PresetScanRunner
@@ -11,12 +12,16 @@ class FakeControl:
         self.tuner_count = tuner_count
         if progress_callback:
             progress_callback(1, len(targets), type('Scan', (), {'services': [object()]})())
-        return ('scan-result',)
+        return (SimpleNamespace(target=targets[0], status=SimpleNamespace(is_locked=True), services=[object()]),)
 
 
 class FakeStore:
     def __init__(self):
         self.saved = None
+        self.profile = None
+
+    def update_device_profile(self, device_id, **updates):
+        self.profile = (device_id, updates)
 
     def replace_preset_scan_channels(self, device_id, rows):
         self.saved = (device_id, rows)
@@ -49,6 +54,7 @@ class PresetScanRunnerTest(unittest.TestCase):
         self.assertEqual(state['stored_channels'], 1)
         self.assertEqual(store.saved[0], 'box')
         self.assertFalse(store.saved[1][0]['enabled'])
+        self.assertEqual(store.profile[1]['learned_muxes'], [{'frequency_hz':267000000, 'modulation':'VSB/8'}])
 
     def test_empty_service_result_leaves_store_untouched(self):
         called = []

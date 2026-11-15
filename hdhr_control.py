@@ -431,6 +431,13 @@ class HDHomeRunControlClient:
             return TunerLease(tuner_index=tuner_index, lockkey=lockkey)
         raise HDHomeRunControlError("스캔에 사용할 유휴 HDHomeRun 튜너가 없습니다.")
 
+    def acquire_specific_idle_tuner(self, tuner_index: int) -> TunerLease:
+        if not self.tuner_is_idle(tuner_index):
+            raise HDHomeRunControlError('튜너가 사용 중입니다.')
+        key = int(self._random_key()) & 0xffffffff or 1
+        self.set(f'/tuner{tuner_index}/lockkey', str(key))
+        return TunerLease(tuner_index, key)
+
     def release_tuner(self, lease: TunerLease) -> None:
         tuner_index = self._validate_tuner_index(lease.tuner_index)
         try:

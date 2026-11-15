@@ -3,6 +3,7 @@ import os
 import tempfile
 import time
 import unittest
+from unittest.mock import Mock, patch
 
 from hls_manager import HLSManager
 
@@ -26,6 +27,29 @@ class HLSManagerTest(unittest.TestCase):
         self.assertEqual(command[command.index("-hls_list_size") + 1], "30")
         self.assertEqual(command[command.index("-hls_delete_threshold") + 1], "30")
         self.assertIn("delete_segments+omit_endlist+independent_segments+temp_file", command)
+
+    def test_shared_stream_reserves_once_and_idle_cleanup_releases_tuner(self):
+        cleanup = Mock()
+        factory = Mock(return_value=('http://192.168.1.10:5004/tuner0/ch441000000-3', cleanup))
+        process = Mock()
+        process.poll.return_value = None
+        with patch('hls_manager.subprocess.Popen', return_value=process), patch.object(HLSManager, '_read_ready_playlist', return_value='#EXTM3U\n#EXTINF:2,\nsegment_000000001.ts\n'):
+            self.assertEqual(HLSManager.ensure_stream('scan:3', 'http://192.168.1.10', source_factory=factory)['ret'],'success')
+            self.assertEqual(HLSManager.ensure_stream('scan:3', 'http://192.168.1.10', source_factory=factory)['ret'],'success')
+            factory.assert_called_once()
+            cleanup.assert_not_called()
+            HLSManager._streams[HLSManager.stream_key('scan:3')]['last_access'] = time.monotonic()-61
+            HLSManager.cleanup()
+        cleanup.assert_called_once()
+        process.terminate.assert_called_once()
+
+    def test_encoder_failure_releases_acquired_tuner(self):
+        cleanup = Mock()
+        factory = Mock(return_value=('http://192.168.1.10:5004/tuner0/ch441000000-3', cleanup))
+        with patch('hls_manager.subprocess.Popen', side_effect=OSError('failed')):
+            result=HLSManager.ensure_stream('scan:3', 'http://192.168.1.10', source_factory=factory)
+        self.assertEqual(result['ret'],'warning')
+        cleanup.assert_called_once()
 
     def test_mobile_cpu_command_transcodes_video_and_audio(self):
         command = HLSManager.build_command("http://192.168.1.10:5004/auto/v7", "device:7", "mobile_cpu")
