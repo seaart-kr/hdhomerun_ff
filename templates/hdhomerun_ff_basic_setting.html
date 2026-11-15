@@ -85,7 +85,13 @@
     <div class="card-header">4. 채널 목록</div>
     <div class="card-body table-responsive">
       <table class="table table-sm"><thead><tr><th>번호</th><th>이름</th><th>출처</th><th>영상</th><th>음성</th><th>상태</th></tr></thead><tbody>
-      {% for channel in channels %}<tr><td>{{ channel.guide_number }}</td><td>{{ channel.name }}</td><td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td><td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td><td>{{ '활성' if channel.enabled else '비활성' }}</td></tr>{% endfor %}
+      {% for channel in channels %}<tr>
+        <td>{{ channel.guide_number }}</td>
+        <td>{% if channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% else %}{{ channel.name }}{% endif %}</td>
+        <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
+        <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
+        <td>{{ '활성' if channel.enabled else '비활성' }}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
+      </tr>{% endfor %}
       {% if not channels %}<tr><td colspan="6" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
     </div>

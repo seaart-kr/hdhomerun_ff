@@ -89,6 +89,7 @@ def preset_scan_channel_rows(device_id: str, scans: list[PresetMuxScan] | tuple[
                     'original_network_id': scan.original_network_id,
                     'program_number': service.program_number,
                     'flags': list(service.flags),
+                    'streaminfo_line': service.raw,
                 },
             })
     return rows

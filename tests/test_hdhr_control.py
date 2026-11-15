@@ -87,6 +87,12 @@ class ControlCodecTest(unittest.TestCase):
 
 
 class StreamInfoTest(unittest.TestCase):
+    def test_missing_names_are_not_status_flags_or_zero(self):
+        _, _, services = parse_streaminfo('111: 0 (encrypted)\n41: 0\n9: (control)\n21: 0 (no data)\n')
+        self.assertEqual([s.name for s in services], ['Program 111', 'Program 41', 'Program 9', 'Program 21'])
+        self.assertEqual([s.flags for s in services], [('encrypted',), (), ('control',), ('no data',)])
+        self.assertTrue(all(not s.virtual_channel for s in services))
+
     def test_parses_transport_and_programs(self):
         tsid, onid, services = parse_streaminfo(
             "tsid=0x3a\n"
@@ -150,7 +156,7 @@ class PresetScanTest(unittest.TestCase):
         self.assertEqual(results[0].services[0].program_number, 10)
         self.assertTrue(results[0].status.is_locked)
         self.assertIn(
-            ("set", "/tuner0/channel", "auto:267000000", 0x12345678),
+            ("set", "/tuner0/channel", "8vsb:267000000", 0x12345678),
             client.commands,
         )
         self.assertEqual(
@@ -166,6 +172,12 @@ class PresetScanTest(unittest.TestCase):
         client.values["/tuner0/lockkey"] = "49201"
         with self.assertRaises(HDHomeRunControlError):
             client.acquire_idle_tuner(1)
+
+    def test_qam_target_uses_explicit_modulation(self):
+        client = ScriptedScanner()
+        client.scan_targets([ScanTarget(0, 627000000, 'QAM/256', 'ATSC-T')],
+                            tuner_count=1, settle_seconds=0, lock_timeout=0, streaminfo_timeout=0)
+        self.assertIn(('set', '/tuner0/channel', 'qam256:627000000', 0x12345678), client.commands)
 
 
 if __name__ == "__main__":

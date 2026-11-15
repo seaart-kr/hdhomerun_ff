@@ -2,7 +2,7 @@
 
 ``/lineup.json`` is the device's configured lineup, not a cable-frequency
 preset scan.  The HDHomeRun control protocol can instead tune an *idle*,
-lock-key-protected tuner to ``auto:<frequency>`` and return streaminfo.  This
+lock-key-protected tuner to the preset modulation/frequency and return streaminfo. This
 module intentionally does not alter the global device channel map or force a
 lock held by another client.
 
@@ -222,6 +222,12 @@ def _split_service_flags(value: str) -> tuple[str, list[str]]:
     flags: list[str] = []
     while text.endswith(")"):
         start = text.rfind(" (")
+        if start < 0 and text.startswith("("):
+            flag = text[1:-1].strip().lower()
+            if flag and len(flag) <= 64:
+                flags.insert(0, flag)
+                text = ""
+            break
         if start < 0:
             break
         flag = text[start + 2:-1].strip().lower()
@@ -258,14 +264,15 @@ def parse_streaminfo(value: str) -> tuple[str, str, tuple[ScannedService, ...]]:
         if not 0 < program_number <= 0xFFFF or program_number in seen_programs:
             continue
         seen_programs.add(program_number)
-        description = description.strip()
-        candidate, separator, remainder = description.partition(" ")
+        description, flags = _split_service_flags(description)
+        parts = description.split(None, 1)
+        candidate = parts[0] if parts else ''
         virtual_channel = ""
         name_and_flags = description
-        if separator and _looks_like_virtual_channel(candidate):
-            virtual_channel = candidate
-            name_and_flags = remainder.strip()
-        name, flags = _split_service_flags(name_and_flags)
+        if _looks_like_virtual_channel(candidate):
+            virtual_channel = candidate if any(int(p) for p in candidate.split('.')) else ''
+            name_and_flags = parts[1] if len(parts) > 1 else ''
+        name = name_and_flags.strip()
         services.append(
             ScannedService(
                 program_number=program_number,
@@ -446,12 +453,15 @@ class HDHomeRunControlClient:
         """Perform an explicit scan with one leased idle tuner.
 
         Each target's frequency comes exclusively from the selected preset.
-        The tuner auto-detects VSB/QAM; its actual lock type is returned in
-        ``status`` for the caller to compare with the expected modulation.
+        Each preset modulation is sent explicitly: ``auto`` is affected by
+        the device channel map and can miss VSB on a cable-configured device.
         """
 
         if not targets:
             return ()
+        modulation_commands = {'VSB/8': '8vsb', 'QAM/256': 'qam256'}
+        if any(t.modulation not in modulation_commands for t in targets):
+            raise HDHomeRunValidationError('지원하지 않는 프리셋 변조 방식입니다.')
         if (
             settle_seconds < 0
             or lock_timeout < 0
@@ -472,7 +482,7 @@ class HDHomeRunControlClient:
                 check_cancelled()
                 self.set(
                     f"/tuner{lease.tuner_index}/channel",
-                    f"auto:{int(target.frequency_hz)}",
+                    f"{modulation_commands[target.modulation]}:{int(target.frequency_hz)}",
                     lockkey=lease.lockkey,
                 )
                 # A cable tuner can take a few seconds to obtain lock.  A
