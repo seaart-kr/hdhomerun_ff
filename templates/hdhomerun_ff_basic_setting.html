@@ -88,10 +88,10 @@
           </div>
         </div>
         <div class="form-group row">
-          <label class="col-sm-3 col-form-label">기본 출력</label>
+          <label class="col-sm-3 col-form-label">Shyni 기본 출력</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile">
-            <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (코덱 변환 없음)</option>
-            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile') == 'mobile_cpu' %}selected{% endif %}>모바일 H.264/AAC (CPU 변환)</option>
+            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 트랜스코딩 (Shyni 권장 · CPU 변환)</option>
+            <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (고급 · 코덱 변환 없음)</option>
           </select></div>
         </div>
         <div class="form-group row">
@@ -102,7 +102,7 @@
         <hr>
         <div><strong>Shyni 기본 M3U:</strong> <code>{{ m3u_default_url }}</code></div>
         <div><strong>원본 전용 M3U:</strong> <code>{{ m3u_copy_url }}</code></div>
-        <div><strong>모바일 H.264/AAC M3U:</strong> <code>{{ m3u_mobile_url }}</code></div>
+        <div><strong>H.264/AAC 변환 전용 M3U (Shyni 권장):</strong> <code>{{ m3u_mobile_url }}</code></div>
         <small class="form-text text-muted">현재 저장 채널: {{ channel_summary.enabled }}개 활성 / {{ channel_summary.total }}개 전체. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
       </div>
     </div>

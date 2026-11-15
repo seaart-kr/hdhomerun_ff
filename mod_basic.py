@@ -78,7 +78,7 @@ def _source_format(device, channel, force=False):
 
 
 def _output_profile():
-    return normalise_output_profile(P.ModelSetting.get('basic_hls_output_profile') or 'copy')
+    return normalise_output_profile(P.ModelSetting.get('basic_hls_output_profile') or 'mobile_cpu')
 
 
 def _playlist_channels():
@@ -130,7 +130,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_scan_mode': 'auto',
         'basic_hdhomerun_stream_format': 'auto',
         'basic_hdhomerun_playlist_source': 'scan',
-        'basic_hls_output_profile': 'copy',
+        'basic_hls_output_profile': 'mobile_cpu',
         'basic_hls_idle_timeout': '60',
     }
 

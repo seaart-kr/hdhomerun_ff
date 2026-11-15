@@ -54,6 +54,7 @@ class HLSManagerTest(unittest.TestCase):
     def test_mobile_cpu_command_transcodes_video_and_audio(self):
         command = HLSManager.build_command("http://192.168.1.10:5004/auto/v7", "device:7", "mobile_cpu")
         self.assertIn("libx264", command)
+        self.assertEqual(command[command.index('-preset')+1], 'ultrafast')
         self.assertIn("aac", command)
         self.assertIn("yuv420p", command)
         self.assertIn("yadif=0:-1:0", command)

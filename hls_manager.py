@@ -189,7 +189,7 @@ class HLSManager:
                 "-c:v",
                 "libx264",
                 "-preset",
-                "veryfast",
+                "ultrafast",
                 "-tune",
                 "zerolatency",
                 "-vf",
