@@ -89,11 +89,48 @@
         </div>
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">Shyni 기본 출력</label>
-          <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile">
-            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 안정형 (최대 720p · 약 3Mbps · Shyni 권장)</option>
+          <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile" id="hdhr_output_profile">
+            <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 변환 · 아래 사용자 설정 적용 (Shyni 권장)</option>
+            <option value="copy_video_aac" {% if arg.get('basic_hls_output_profile') == 'copy_video_aac' %}selected{% endif %}>영상 원본 + 음성 AAC 변환 (TV용 저부하 · 원본 AC3 호환 문제 시)</option>
             <option value="mobile_1080" {% if arg.get('basic_hls_output_profile') == 'mobile_1080' %}selected{% endif %}>H.264/AAC 고화질 (원본 해상도 유지 · CPU/통신 부하 높음)</option>
             <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (고급 · 코덱 변환 없음)</option>
           </select></div>
+        </div>
+        <div class="border rounded p-3 mb-3">
+          <h5>트랜스코딩 / 저장 버퍼 설정</h5>
+          <div class="alert alert-info py-2" id="hdhr_transcode_summary"></div>
+          <div class="form-row">
+            <div class="form-group col-md-4"><label>최대 영상 해상도</label><select class="form-control transcode-video-option" name="basic_transcode_height">
+              {% for value,label in [('480','480p'),('720','720p · 안정형 권장'),('1080','1080p'),('0','원본 해상도 유지')] %}<option value="{{ value }}" {% if arg.get('basic_transcode_height') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select></div>
+            <div class="form-group col-md-4"><label>프레임률</label><select class="form-control transcode-video-option" name="basic_transcode_fps">
+              {% for value,label in [('25','25fps'),('30','29.97fps · 권장'),('50','50fps'),('60','59.94fps'),('source','원본 유지')] %}<option value="{{ value }}" {% if arg.get('basic_transcode_fps') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select></div>
+            <div class="form-group col-md-4"><label>변환 속도</label><select class="form-control transcode-video-option" name="basic_transcode_preset">
+              {% for preset in transcode_presets %}<option value="{{ preset }}" {% if arg.get('basic_transcode_preset') == preset %}selected{% endif %}>{{ preset }}{% if preset == 'ultrafast' %} · 가장 빠름 / NAS 권장{% endif %}</option>{% endfor %}
+            </select></div>
+          </div>
+          <div class="form-row">
+            {% for key,label,low,high in [('video_kbps','목표 영상 비트레이트 (kbps)',500,20000),('max_kbps','최대 영상 비트레이트 (kbps)',500,30000)] %}
+            <div class="form-group col-md-4"><label>{{ label }}</label><input class="form-control transcode-video-option" type="number" min="{{ low }}" max="{{ high }}" step="100" name="basic_transcode_{{ key }}" value="{{ arg.get('basic_transcode_'+key) }}"></div>
+            {% endfor %}
+            <div class="form-group col-md-4"><label>CPU 변환 스레드</label><select class="form-control transcode-video-option" name="basic_transcode_threads">
+              {% for value,label in [('0','자동'),('1','1'),('2','2 · NAS 권장'),('4','4'),('8','8')] %}<option value="{{ value }}" {% if arg.get('basic_transcode_threads') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group col-md-4"><label>AAC 음성 비트레이트 (kbps)</label><input class="form-control transcode-audio-option" type="number" min="64" max="320" step="32" name="basic_transcode_audio_kbps" value="{{ arg.get('basic_transcode_audio_kbps') }}"></div>
+            <div class="form-group col-md-4"><label>음성 싱크 보정 (ms)</label><input class="form-control" type="number" min="-2000" max="2000" step="50" name="basic_transcode_audio_offset_ms" value="{{ arg.get('basic_transcode_audio_offset_ms') }}"><small class="form-text text-muted">음성이 입보다 늦으면 음수, 빠르면 양수. 예: -100. 기본 0.</small></div>
+          </div>
+          <div class="form-row">
+            <div class="form-group col-md-6"><label>미리 저장하고 보낼 영상 길이 (초)</label><input class="form-control" type="number" min="0" max="30" step="2" name="basic_transcode_delay_seconds" value="{{ arg.get('basic_transcode_delay_seconds') }}"><small class="form-text text-muted">기본 12초. 최신 영상 조각을 바로 보내지 않고 이만큼 먼저 저장합니다. 값이 크면 방송 지연과 초기 대기가 늘어납니다.</small></div>
+            <div class="form-group col-md-6"><label>최근 영상 보관 창 (초)</label><input class="form-control" type="number" min="120" max="600" step="30" name="basic_transcode_window_seconds" value="{{ arg.get('basic_transcode_window_seconds') }}"><small class="form-text text-muted">기본 180초 순환 저장. 오래된 조각은 자동 삭제됩니다.</small></div>
+          </div>
+          <p class="small text-muted">영상 세부 설정은 H.264/AAC 사용자 설정 모드에 적용됩니다. 음성 싱크와 저장 버퍼는 원본 모드에도 적용됩니다. 원본 음성 싱크 보정에는 FFmpeg setts 필터가 필요합니다. 출력 방식을 바꾸면 Shyni 채널 목록도 새로고침하세요.</p>
+          <button type="button" class="btn btn-outline-primary" id="hdhr_transcode_save_btn">변환 설정 저장</button>
+          <button type="button" class="btn btn-primary ml-2" id="hdhr_transcode_apply_btn">저장·현재 재생에 적용</button>
+          <small class="form-text text-muted">저장은 다음 새 재생부터 적용됩니다. 저장·적용은 현재 FF 재생 스트림을 종료하므로 Shyni에서 재생을 다시 시작해야 합니다. FF 전체 재시작은 하지 않습니다.</small>
+          <div id="hdhr_transcode_result" class="mt-2" role="status" aria-live="polite"></div>
         </div>
         <div class="form-group row">
           <label class="col-sm-3 col-form-label">유휴 종료 시간</label>
@@ -102,7 +139,8 @@
         <button type="button" class="btn btn-primary" id="hdhr_save_btn">설정 저장</button>
         <hr>
         <div><strong>Shyni 기본 M3U:</strong> <code>{{ m3u_default_url }}</code></div>
-        <div><strong>원본 전용 M3U:</strong> <code>{{ m3u_copy_url }}</code></div>
+        <small class="form-text text-muted">위 출력 방식 선택을 반영하려면 Shyni 기본 M3U를 사용하고 Shyni의 채널 목록을 새로고침하세요. 변환 전용/원본 전용 주소는 각각 해당 출력으로 고정됩니다.</small>
+        <details class="my-2"><summary>고급: 원본 전용 M3U · 트랜스코딩하지 않음</summary><code>{{ m3u_copy_url }}</code></details>
         <div><strong>H.264/AAC 변환 전용 M3U (Shyni 권장):</strong> <code>{{ m3u_mobile_url }}</code></div>
         <small class="form-text text-muted">현재 저장 채널: {{ channel_summary.enabled }}개 활성 / {{ channel_summary.total }}개 전체. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
       </div>
@@ -142,6 +180,26 @@
   var scanRequest=null;
   var scanActionPending=false;
   var scanRetries=0;
+  function transcodeSummary(){
+    var profile=$('#hdhr_output_profile').val();
+    $('.transcode-video-option').prop('disabled',profile!=='mobile_cpu');
+    $('.transcode-audio-option').prop('disabled',profile==='copy' || profile==='mobile_1080');
+    function value(key){return form.find('[name="basic_transcode_'+key+'"]').val();}
+    var names={copy:'원본 유지 · 영상/음성 코덱 변환 없음',copy_video_aac:'영상 원본 + 음성 AAC 변환',mobile_cpu:'H.264/AAC 사용자 설정',mobile_1080:'원본 해상도 H.264/AAC 고정 프로필'};
+    var detail=profile==='mobile_cpu' ? ' · '+(value('height')==='0' ? '원본 해상도' : value('height')+'p 이하')+' · 영상 '+value('video_kbps')+'kbps / 최대 '+value('max_kbps')+'kbps' : '';
+    $('#hdhr_transcode_summary').text('현재 선택: '+names[profile]+detail+' · 미리 저장 '+value('delay_seconds')+'초 · 음성 보정 '+value('audio_offset_ms')+'ms');
+  }
+  form.on('change input','#hdhr_output_profile, [name^="basic_transcode_"]',transcodeSummary);
+  function saveTranscode(apply){
+    $('#hdhr_transcode_save_btn, #hdhr_transcode_apply_btn').prop('disabled',true);
+    $.ajax({url:root+'transcode_setting_save',type:'POST',dataType:'json',timeout:30000,global:false,
+      data:form.serialize()+'&'+$.param({apply_now:apply ? 'yes' : 'no'})
+    }).done(function(ret){$('#hdhr_transcode_result').text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
+    }).fail(function(){$('#hdhr_transcode_result').text('저장에 실패했습니다. 설정값을 확인하고 다시 시도하세요.').addClass('text-danger');
+    }).always(function(){$('#hdhr_transcode_save_btn, #hdhr_transcode_apply_btn').prop('disabled',false);});
+  }
+  $('#hdhr_transcode_save_btn').on('click',function(){saveTranscode(false);});
+  $('#hdhr_transcode_apply_btn').on('click',function(){saveTranscode(true);});
   function scheduleScanStatus(delay) {
     window.clearTimeout(scanTimer);
     scanTimer=window.setTimeout(scanStatus, delay);
@@ -245,6 +303,7 @@
   $('#hdhr_diag_btn').on('click', function(){call('diagnostics','#hdhr_diag_result');});
   $('#hdhr_source_probe_btn').on('click', function(){call('probe_source_format','#hdhr_source_result');});
   scanStatus();
+  transcodeSummary();
 })();
 </script>
 {% endblock %}

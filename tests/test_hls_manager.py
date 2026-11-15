@@ -6,13 +6,15 @@ import unittest
 from unittest.mock import Mock, patch
 
 from hls_manager import HLSManager
+from transcode_config import DEFAULTS
 
 
 class HLSManagerTest(unittest.TestCase):
     def setUp(self):
         self.tempdir = tempfile.TemporaryDirectory()
         HLSManager.stop_all()
-        HLSManager.configure(cache_root=self.tempdir.name, idle_timeout=60, start_timeout=1)
+        HLSManager.configure(cache_root=self.tempdir.name, idle_timeout=60, start_timeout=1,
+                             transcode_options=dict(DEFAULTS,delay_seconds=0))
 
     def tearDown(self):
         HLSManager.stop_all()
@@ -24,7 +26,7 @@ class HLSManagerTest(unittest.TestCase):
         self.assertIn("copy", command)
         self.assertIn("-hls_time", command)
         self.assertEqual(command[command.index("-hls_time") + 1], "2")
-        self.assertEqual(command[command.index("-hls_list_size") + 1], "30")
+        self.assertEqual(command[command.index("-hls_list_size") + 1], "90")
         self.assertEqual(command[command.index("-hls_delete_threshold") + 1], "30")
         self.assertIn("delete_segments+omit_endlist+independent_segments+temp_file", command)
 

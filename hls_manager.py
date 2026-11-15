@@ -19,6 +19,10 @@ import time
 from pathlib import Path
 from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
+try:
+    from .transcode_config import DEFAULTS, validate_options, video_filter, delayed_playlist
+except ImportError:
+    from transcode_config import DEFAULTS, validate_options, video_filter, delayed_playlist
 
 
 class HLSManager:
@@ -33,19 +37,20 @@ class HLSManager:
     DEFAULT_CACHE_ROOT = "/data/tmp/hdhomerun_ff_hls"
     CACHE_ROOT = DEFAULT_CACHE_ROOT
 
-    PROFILES = ("copy", "mobile_cpu", "mobile_1080")
+    PROFILES = ("copy", "copy_video_aac", "mobile_cpu", "mobile_1080")
     SEGMENT_RE = re.compile(r"^segment_[0-9]{9}\.ts$")
     IDLE_TIMEOUT = 60
     START_TIMEOUT = 25
     MIN_READY_SEGMENTS = 3
     PLAYLIST_MAX_AGE = 8
     HLS_TIME = 2
-    HLS_LIST_SIZE = 30
+    HLS_LIST_SIZE = 90
     HLS_DELETE_THRESHOLD = 30
 
     _lock = threading.RLock()
     _streams: Dict[str, Dict[str, object]] = {}
     _janitor_stop = None
+    TRANSCODE = dict(DEFAULTS)
 
     @classmethod
     def configure(
@@ -54,6 +59,7 @@ class HLSManager:
         cache_root: Optional[str] = None,
         idle_timeout: Optional[int] = None,
         start_timeout: Optional[int] = None,
+        transcode_options: Optional[dict] = None,
     ) -> Dict[str, object]:
         """Configure runtime paths and bounded lifecycle timeouts.
 
@@ -70,11 +76,17 @@ class HLSManager:
                 cls.IDLE_TIMEOUT = cls._bounded_int(idle_timeout, 30, 600, 60)
             if start_timeout is not None:
                 cls.START_TIMEOUT = cls._bounded_int(start_timeout, 1, 60, 25)
+            if transcode_options is not None:
+                cls.TRANSCODE = validate_options(transcode_options)
+                cls.HLS_LIST_SIZE = max(60, cls.TRANSCODE['window_seconds']//cls.HLS_TIME)
+                if start_timeout is None:
+                    cls.START_TIMEOUT = min(60,max(25,cls.TRANSCODE['delay_seconds']+cls.MIN_READY_SEGMENTS*cls.HLS_TIME+10))
             return {
                 "cache_root": cls.CACHE_ROOT,
                 "idle_timeout": cls.IDLE_TIMEOUT,
                 "start_timeout": cls.START_TIMEOUT,
                 "profiles": list(cls.PROFILES),
+                "transcode": dict(cls.TRANSCODE),
             }
 
     @staticmethod
@@ -184,10 +196,15 @@ class HLSManager:
         if profile == 'mobile_cpu':
             # Bound decoder/filter thread overhead on small NAS CPUs.
             at = command.index('-i')
-            command[at:at] = ['-threads', '2', '-filter_threads', '2']
+            command[at:at] = ['-threads', str(cls.TRANSCODE['threads']), '-filter_threads', str(cls.TRANSCODE['threads'])]
 
         if profile == "copy":
             command.extend(["-c", "copy"])
+            if cls.TRANSCODE['audio_offset_ms']:
+                offset = cls.TRANSCODE['audio_offset_ms']/1000
+                command.extend(['-bsf:a', f'setts=pts=PTS+({offset:.3f})/TB:dts=DTS+({offset:.3f})/TB'])
+        elif profile == 'copy_video_aac':
+            command.extend(['-c:v', 'copy', '-c:a', 'aac', '-b:a', f"{cls.TRANSCODE['audio_kbps']}k", '-ac','2','-ar','48000'])
         else:
             # Mobile output is deliberately software-only for now.  Hardware
             # profiles must only be added after a real encoder probe succeeds.
@@ -195,11 +212,11 @@ class HLSManager:
                 "-c:v",
                 "libx264",
                 "-preset",
-                "ultrafast",
+                cls.TRANSCODE['preset'] if profile == 'mobile_cpu' else 'ultrafast',
                 "-tune",
                 "zerolatency",
                 "-vf",
-                ("yadif=0:-1:1,fps=30000/1001,scale=w='min(1280,iw)':h='min(720,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2:flags=fast_bilinear"
+                (video_filter(cls.TRANSCODE)
                  if profile == 'mobile_cpu' else "yadif=0:-1:0"),
                 "-profile:v",
                 "main",
@@ -212,15 +229,19 @@ class HLSManager:
                 "-c:a",
                 "aac",
                 "-b:a",
-                "128k",
+                f"{cls.TRANSCODE['audio_kbps']}k" if profile == 'mobile_cpu' else '128k',
                 "-ac",
                 "2",
                 "-ar",
                 "48000",
             ])
             if profile == 'mobile_cpu':
-                command.extend(['-threads:v', '2', '-b:v', '3000k',
-                                '-maxrate', '4000k', '-bufsize', '8000k'])
+                command.extend(['-threads:v', str(cls.TRANSCODE['threads']), '-b:v', f"{cls.TRANSCODE['video_kbps']}k",
+                                '-maxrate', f"{cls.TRANSCODE['max_kbps']}k", '-bufsize', f"{cls.TRANSCODE['max_kbps']*2}k"])
+
+        if profile != 'copy':
+            offset = cls.TRANSCODE['audio_offset_ms']/1000
+            command.extend(['-af', f'aresample=async=1,asetpts=PTS+({offset:.3f})/TB'])
 
         command.extend([
             "-f",
@@ -252,7 +273,7 @@ class HLSManager:
         return cls.stream_key(channel, profile), channel, profile
 
     @classmethod
-    def _read_ready_playlist(cls, directory: str) -> str:
+    def _read_ready_playlist(cls, directory: str, options=None) -> str:
         playlist_path = os.path.join(cls._assert_stream_directory(directory), "index.m3u8")
         try:
             if time.time() - os.path.getmtime(playlist_path) > cls.PLAYLIST_MAX_AGE:
@@ -261,8 +282,8 @@ class HLSManager:
                 playlist = handle.read()
             if "#EXTM3U" not in playlist or playlist.count('#EXTINF:') < cls.MIN_READY_SEGMENTS:
                 return ""
-            return playlist
-        except OSError:
+            return delayed_playlist(playlist, (options or cls.TRANSCODE)['delay_seconds'], cls.MIN_READY_SEGMENTS)
+        except (OSError,ValueError):
             return ""
 
     @classmethod
@@ -283,7 +304,8 @@ class HLSManager:
             if state:
                 state["last_access"] = time.monotonic()
             directory = str(state["directory"]) if state else cls.stream_directory(channel_id, output_profile)
-        return cls._read_ready_playlist(directory)
+            options=state.get('options') if state else None
+        return cls._read_ready_playlist(directory,options)
 
     @classmethod
     def ensure_stream(
@@ -343,13 +365,14 @@ class HLSManager:
                     "output_profile": profile,
                     "last_access": now,
                     "cleanup": cleanup,
+                    "options": dict(cls.TRANSCODE),
                 }
                 cls._streams[key] = state
                 cls._start_janitor_locked()
 
         deadline = time.monotonic() + cls.START_TIMEOUT
         while time.monotonic() < deadline:
-            playlist = cls._read_ready_playlist(directory)
+            playlist = cls._read_ready_playlist(directory,state.get('options'))
             if playlist:
                 return {
                     "ret": "success",
@@ -360,13 +383,16 @@ class HLSManager:
                 }
             with cls._lock:
                 current = cls._streams.get(key)
+                if current is not state:
+                    return {'ret':'warning','status':409,'msg':'재생 설정이 변경되었습니다. 다시 재생하세요.'}
                 if current is None or not cls._is_alive(current):
                     cls._stop_state_locked(key, clear=True)
                     return {"ret": "warning", "status": 502, "msg": "HLS encoder stopped"}
             time.sleep(0.1)
 
         with cls._lock:
-            cls._stop_state_locked(key, clear=True)
+            if cls._streams.get(key) is state:
+                cls._stop_state_locked(key, clear=True)
         return {"ret": "warning", "status": 504, "msg": "HLS encoder start timed out"}
 
     @classmethod
@@ -441,6 +467,19 @@ class HLSManager:
                 cls._janitor_stop.set()
             for key in list(cls._streams):
                 cls._stop_state_locked(key, clear=True)
+
+    @classmethod
+    def stop_transcoded_streams(cls) -> int:
+        with cls._lock:
+            keys=[key for key,state in cls._streams.items() if state.get('output_profile') != 'copy']
+            for key in keys:cls._stop_state_locked(key,clear=True)
+            return len(keys)
+
+    @classmethod
+    def stream_options(cls, channel_id, output_profile):
+        with cls._lock:
+            state=cls._streams.get(cls.stream_key(channel_id,output_profile))
+            return dict(state.get('options',cls.TRANSCODE) if state else cls.TRANSCODE)
 
     @classmethod
     def read_segment(

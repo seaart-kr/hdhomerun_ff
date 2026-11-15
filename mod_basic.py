@@ -18,6 +18,7 @@ from .playlist import build_shyni_m3u, normalise_output_profile
 from .preset import PresetValidationError, list_bundled_presets, load_bundled_preset, korean_full_scan_preset, dump_preset
 from .preset_scan_runner import PresetScanRunner
 from .raw_stream import RawStreamSession, probe_http_format
+from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_options
 from .setup import P, logger
 from .task import device_summary, snapshot_channel_rows
 
@@ -88,9 +89,18 @@ def _playlist_channels():
 
 
 def _hls_options():
+    options=validate_options({key:P.ModelSetting.get('basic_transcode_'+key) or default
+                              for key,default in TRANSCODE_DEFAULTS.items()})
     return HLSManager.configure(
         idle_timeout=_as_int(P.ModelSetting.get('basic_hls_idle_timeout'), 60, 30, 600),
+        transcode_options=options,
     )
+
+
+def _transcode_form(req):
+    return validate_options({key:req.form.get('basic_transcode_'+key,
+                             P.ModelSetting.get('basic_transcode_'+key) or default)
+                             for key,default in TRANSCODE_DEFAULTS.items()})
 
 
 def _consumer_id(req):
@@ -132,6 +142,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_playlist_source': 'scan',
         'basic_hls_output_profile': 'mobile_cpu',
         'basic_hls_idle_timeout': '60',
+        **{'basic_transcode_'+key:str(value) for key,value in TRANSCODE_DEFAULTS.items()},
     }
 
     def __init__(self, P):
@@ -155,6 +166,7 @@ class ModuleBasic(PluginModuleBase):
 
     @staticmethod
     def _save_settings(req):
+        _transcode_form(req)
         P.ModelSetting.setting_save(req)
         _hls_options()
 
@@ -167,8 +179,12 @@ class ModuleBasic(PluginModuleBase):
         channels = _store().list_channels()
         settings['basic_hls_output_profile'] = _output_profile()
         settings['basic_hls_idle_timeout'] = str(_as_int(settings.get('basic_hls_idle_timeout'), 60, 30, 600))
+        options=_hls_options()['transcode']
+        settings.update({'basic_transcode_'+key:str(value) for key,value in options.items()})
         return {
             'arg': settings,
+            'transcode_presets': PRESETS,
+            'transcode_options': options,
             'page_sub': sub,
             'ajax_sub': self.name,
             'package_name': P.package_name,
@@ -201,6 +217,23 @@ class ModuleBasic(PluginModuleBase):
             if sub == 'setting_save':
                 self._save_settings(req)
                 return jsonify({'ret': 'success', 'msg': '설정을 저장했습니다.'})
+
+            if sub == 'transcode_setting_save':
+                options=_transcode_form(req)
+                profile=str(req.form.get('basic_hls_output_profile') or _output_profile())
+                if profile not in HLSManager.PROFILES:
+                    raise ValueError('출력 방식을 확인하세요.')
+                for key,value in options.items():
+                    P.ModelSetting.set('basic_transcode_'+key,str(value))
+                P.ModelSetting.set('basic_hls_output_profile',profile)
+                _hls_options()
+                stopped=0
+                if _is_true(req.form.get('apply_now')):
+                    HLSManager.stop_all()
+                    stopped=1
+                return jsonify({'ret':'success','options':options,'profile':profile,
+                    'msg':('설정을 저장하고 현재 FF 재생 스트림을 종료했습니다. Shyni에서 재생을 다시 시작하세요.' if stopped else
+                           '설정을 저장했습니다. 다음 새 재생부터 적용됩니다. 바로 반영하려면 저장·적용을 누르세요.')})
 
             if sub == 'probe_device':
                 self._save_settings(req)
@@ -403,7 +436,9 @@ class ModuleBasic(PluginModuleBase):
                         consumer_id,
                     ),
                     mimetype='application/vnd.apple.mpegurl',
-                    headers={'Cache-Control': 'no-store', 'X-Accel-Buffering': 'no'},
+                    headers={'Cache-Control': 'no-store, no-cache, must-revalidate', 'X-Accel-Buffering': 'no',
+                             'X-HDHR-Output-Profile':profile,
+                             'X-HDHR-Buffer-Seconds':str(HLSManager.stream_options(channel_id,profile)['delay_seconds'])},
                 )
 
             if sub == 'hls_segment.ts':
