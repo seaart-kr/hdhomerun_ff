@@ -466,7 +466,7 @@ class HDHomeRunControlClient:
 
         if not targets:
             return ()
-        modulation_commands = {'VSB/8': '8vsb', 'QAM/256': 'qam256'}
+        modulation_commands = {'VSB/8': '8vsb', 'QAM/256': 'qam256', 'QAM/64': 'qam64', 'QAM/AUTO': 'qam'}
         if any(t.modulation not in modulation_commands for t in targets):
             raise HDHomeRunValidationError('지원하지 않는 프리셋 변조 방식입니다.')
         if (

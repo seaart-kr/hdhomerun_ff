@@ -240,6 +240,6 @@ def korean_full_scan_preset() -> dict[str, Any]:
         'version': 1, 'id': 'kr-full-auto', 'name': '한국 전체 자동 탐색',
         'country': 'KR', 'delivery_system': 'ATSC-T', 'source': 'cable',
         'muxes': [{'frequency_hz': f, 'modulation': m}
-                  for f in frequencies for m in ('VSB/8', 'QAM/256')],
+                  for f in frequencies for m in ('VSB/8', 'QAM/AUTO')],
     })
 

@@ -235,7 +235,7 @@ class ChannelStore:
             for row in self.list_channels():
                 raw = row['raw_data']
                 if row['device_id'] == device_id and raw.get('source') == 'preset_scan':
-                    modulation = {'8vsb':'VSB/8', 'qam256':'QAM/256'}.get(raw.get('lock'))
+                    modulation = {'8vsb':'VSB/8', 'qam256':'QAM/256', 'qam64':'QAM/64'}.get(raw.get('lock'))
                     if modulation:
                         pairs.add((int(raw['frequency_hz']), modulation))
         return {'version': 1, 'id': 'learned-device', 'name': '발견 주파수 빠른 재탐색',

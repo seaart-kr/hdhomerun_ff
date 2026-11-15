@@ -12,7 +12,7 @@ class FakeControl:
         self.tuner_count = tuner_count
         if progress_callback:
             progress_callback(1, len(targets), type('Scan', (), {'services': [object()]})())
-        return (SimpleNamespace(target=targets[0], status=SimpleNamespace(is_locked=True), services=[object()]),)
+        return (SimpleNamespace(target=targets[0], status=SimpleNamespace(is_locked=True,lock='8vsb'), services=[object()]),)
 
 
 class FakeStore:

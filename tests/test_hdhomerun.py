@@ -117,7 +117,7 @@ class ScanPlanTest(unittest.TestCase):
                 {
                     "id": "bad",
                     "delivery_system": "ATSC-T",
-                    "muxes": [{"frequency_hz": 267000000, "modulation": "QAM/64"}],
+                    "muxes": [{"frequency_hz": 267000000, "modulation": "QAM/16"}],
                 }
             )
 

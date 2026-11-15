@@ -25,8 +25,8 @@ class RawStreamSession:
         raw = channel['raw_data']
         self.frequency = int(raw['frequency_hz'])
         self.program = int(raw['program_number'])
-        self.mode = {'8vsb':'kr-bcast', 'qam256':'kr-cable', 'VSB/8':'kr-bcast',
-                     'QAM/256':'kr-cable'}.get(raw.get('lock') or raw.get('modulation_expected'))
+        self.mode = {'8vsb':'kr-bcast', 'qam256':'kr-cable', 'qam64':'kr-cable', 'VSB/8':'kr-bcast',
+                     'QAM/256':'kr-cable', 'QAM/64':'kr-cable', 'QAM/AUTO':'kr-cable'}.get(raw.get('lock') or raw.get('modulation_expected'))
         if not self.mode or not 40_000_000 <= self.frequency <= 1_000_000_000 or not 0 < self.program <= 65535:
             raise ValueError('원본 채널의 주파수·서비스 정보가 올바르지 않습니다.')
         if suffix not in ('', '.mpeg'):

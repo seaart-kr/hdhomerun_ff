@@ -22,9 +22,9 @@ class PresetTest(unittest.TestCase):
         pairs={(m['frequency_hz'],m['modulation']) for m in auto['muxes']}
         self.assertEqual(len(pairs),304)
         self.assertIn((441000000,'VSB/8'),pairs)
-        self.assertIn((441000000,'QAM/256'),pairs)
+        self.assertIn((441000000,'QAM/AUTO'),pairs)
         cmb=load_bundled_preset('kr-cable-cmb-v1')
-        self.assertTrue(all((m['frequency_hz'],m['modulation']) in pairs for m in cmb['muxes']))
+        self.assertTrue(all((m['frequency_hz'],'QAM/AUTO' if m['modulation'].startswith('QAM/') else m['modulation']) in pairs for m in cmb['muxes']))
 
     def test_bundled_cmb_preset_preserves_user_supplied_muxes(self):
         preset = load_bundled_preset("kr-cable-cmb-v1")

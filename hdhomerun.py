@@ -25,7 +25,7 @@ USER_AGENT = "hdhomerun_ff/0.1"
 _SAFE_HOST_SUFFIXES = (".local", ".lan", ".home", ".internal")
 _SAFE_HOST_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9.-]{0,252}$")
 _SAFE_ID_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_SAFE_MODULATIONS = {"VSB/8", "QAM/256"}
+_SAFE_MODULATIONS = {"VSB/8", "QAM/256", "QAM/64", "QAM/AUTO"}
 
 
 class HDHomeRunError(RuntimeError):
