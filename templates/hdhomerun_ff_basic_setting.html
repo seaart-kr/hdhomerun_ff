@@ -126,6 +126,7 @@
           <label class="col-sm-3 col-form-label">Shyni 기본 출력</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile" id="hdhr_output_profile">
             <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 변환 · 아래 사용자 설정 적용 (Shyni 권장)</option>
+            <option value="mobile_vaapi" {% if arg.get('basic_hls_output_profile') == 'mobile_vaapi' %}selected{% endif %}>H.264/AAC VAAPI · 영상 GPU 인코딩 (실제 변환 검사 필요)</option>
             <option value="copy_video_aac" {% if arg.get('basic_hls_output_profile') == 'copy_video_aac' %}selected{% endif %}>영상 원본 + 음성 AAC 변환 (TV용 저부하 · 원본 AC3 호환 문제 시)</option>
             <option value="mobile_1080" {% if arg.get('basic_hls_output_profile') == 'mobile_1080' %}selected{% endif %}>H.264/AAC 고화질 (원본 해상도 유지 · CPU/통신 부하 높음)</option>
             <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (고급 · 코덱 변환 없음)</option>
@@ -141,7 +142,16 @@
               <dt class="col-sm-3">음성</dt><dd class="col-sm-9" id="hdhr_audio_encoding">{{ encoding.audio }}</dd>
               <dt class="col-sm-3">VAAPI</dt><dd class="col-sm-9 mb-0" id="hdhr_vaapi_encoding">{{ '사용' if encoding.vaapi else '미사용' }}</dd>
             </dl>
-            <small class="form-text text-muted">선택한 출력으로 새 재생을 시작할 때의 정보입니다. 원본 유지(copy)는 재인코딩하지 않습니다. FFmpeg가 VAAPI를 지원하더라도 현재 변환 프로필은 CPU를 사용합니다.</small>
+            <small class="form-text text-muted">선택한 출력으로 새 재생을 시작할 때의 정보입니다. VAAPI 모드는 영상 인코딩을 GPU로 처리하며 디코딩·필터·AAC 음성은 CPU를 사용합니다. 원본 유지(copy)는 재인코딩하지 않습니다.</small>
+          </div>
+          <div class="border rounded p-2 mb-2">
+            <label for="hdhr_vaapi_driver">VAAPI 드라이버 · GPU 장치 /dev/dri/renderD128</label>
+            <select class="form-control" name="basic_vaapi_driver" id="hdhr_vaapi_driver">
+              {% for value,label in [('auto','자동 · 시스템 드라이버'),('i965','i965 · 구형 인텔 / 저장된 전용 드라이버 우선'),('iHD','iHD · 신형 인텔')] %}<option value="{{ value }}" {% if arg.get('basic_vaapi_driver', 'auto') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
+            </select>
+            <button type="button" class="btn btn-outline-secondary mt-2" id="hdhr_vaapi_probe_btn">VAAPI 실제 변환 검사</button>
+            <div id="hdhr_vaapi_result" class="mt-2 small" role="status" aria-live="polite">{{ vaapi_status.message }}</div>
+            <small class="form-text text-muted">검사를 통과해야 VAAPI 모드를 저장·재생할 수 있습니다. 검사는 방송 튜너를 사용하지 않습니다. 전용 i965 드라이버는 /data/hdhomerun_ff/vaapi/i965에서 읽으며 이 플러그인의 VAAPI 재생에만 적용합니다.</small>
           </div>
           <div class="alert alert-info py-2" id="hdhr_transcode_summary"></div>
           <div class="form-row">
@@ -151,7 +161,7 @@
             <div class="form-group col-md-4"><label>프레임률</label><select class="form-control transcode-video-option" name="basic_transcode_fps">
               {% for value,label in [('25','25fps'),('30','29.97fps · 권장'),('50','50fps'),('60','59.94fps'),('source','원본 유지')] %}<option value="{{ value }}" {% if arg.get('basic_transcode_fps') == value %}selected{% endif %}>{{ label }}</option>{% endfor %}
             </select></div>
-            <div class="form-group col-md-4"><label>변환 속도</label><select class="form-control transcode-video-option" name="basic_transcode_preset">
+            <div class="form-group col-md-4"><label>CPU 인코더 변환 속도</label><select class="form-control transcode-cpu-option" name="basic_transcode_preset">
               {% for preset in transcode_presets %}<option value="{{ preset }}" {% if arg.get('basic_transcode_preset') == preset %}selected{% endif %}>{{ preset }}{% if preset == 'ultrafast' %} · 가장 빠름 / NAS 권장{% endif %}</option>{% endfor %}
             </select></div>
           </div>
@@ -171,7 +181,7 @@
             <div class="form-group col-md-6"><label>미리 저장하고 보낼 영상 길이 (초)</label><input class="form-control" type="number" min="0" max="30" step="2" name="basic_transcode_delay_seconds" value="{{ arg.get('basic_transcode_delay_seconds') }}"><small class="form-text text-muted">기본 12초. 최신 영상 조각을 바로 보내지 않고 이만큼 먼저 저장합니다. 값이 크면 방송 지연과 초기 대기가 늘어납니다.</small></div>
             <div class="form-group col-md-6"><label>최근 영상 보관 창 (초)</label><input class="form-control" type="number" min="120" max="600" step="30" name="basic_transcode_window_seconds" value="{{ arg.get('basic_transcode_window_seconds') }}"><small class="form-text text-muted">기본 180초 순환 저장. 오래된 조각은 자동 삭제됩니다.</small></div>
           </div>
-          <p class="small text-muted">영상 세부 설정은 H.264/AAC 사용자 설정 모드에 적용됩니다. 음성 싱크와 저장 버퍼는 원본 모드에도 적용됩니다. 원본 음성 싱크 보정에는 FFmpeg setts 필터가 필요합니다. 출력 방식을 바꾸면 Shyni 채널 목록도 새로고침하세요.</p>
+          <p class="small text-muted">영상 세부 설정은 CPU 사용자 설정과 VAAPI 모드에 적용됩니다. CPU 인코더 변환 속도는 CPU 모드에만 적용됩니다. 음성 싱크와 저장 버퍼는 원본 모드에도 적용됩니다. 원본 음성 싱크 보정에는 FFmpeg setts 필터가 필요합니다. 출력 방식을 바꾸면 Shyni 채널 목록도 새로고침하세요.</p>
           <button type="button" class="btn btn-outline-primary" id="hdhr_transcode_save_btn">변환 설정 저장</button>
           <button type="button" class="btn btn-primary ml-2" id="hdhr_transcode_apply_btn">저장·현재 재생에 적용</button>
           <small class="form-text text-muted">저장은 다음 새 재생부터 적용됩니다. 저장·적용은 현재 FF 재생 스트림을 종료하므로 Shyni에서 재생을 다시 시작해야 합니다. FF 전체 재시작은 하지 않습니다.</small>
@@ -187,6 +197,8 @@
         <small class="form-text text-muted">위 출력 방식 선택을 반영하려면 Shyni 기본 M3U를 사용하고 Shyni의 채널 목록을 새로고침하세요. 변환 전용/원본 전용 주소는 각각 해당 출력으로 고정됩니다.</small>
         <details class="my-2"><summary>고급: 원본 전용 M3U · 트랜스코딩하지 않음</summary><code>{{ m3u_copy_url }}</code></details>
         <div><strong>H.264/AAC 변환 전용 M3U (Shyni 권장):</strong> <code>{{ m3u_mobile_url }}</code></div>
+        <div class="mt-2"><strong>VAAPI H.264/AAC 전용 M3U:</strong> <code>{{ m3u_vaapi_url }}</code></div>
+        <small class="form-text text-muted">VAAPI 전용 주소는 영상 GPU 인코딩으로 고정됩니다. 기존 CPU 변환 전용 주소는 CPU 모드를 유지합니다.</small>
         <small class="form-text text-muted">현재 M3U에 제공하는 채널: {{ playable_channel_count }}개. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
       </div>
     </div>
@@ -252,11 +264,12 @@
       $('#hdhr_audio_encoding').text(encoding.audio);
       $('#hdhr_vaapi_encoding').text(encoding.vaapi ? '사용' : '미사용');
     }
-    $('.transcode-video-option').prop('disabled',profile!=='mobile_cpu');
+    $('.transcode-video-option').prop('disabled',profile!=='mobile_cpu' && profile!=='mobile_vaapi');
+    $('.transcode-cpu-option').prop('disabled',profile!=='mobile_cpu');
     $('.transcode-audio-option').prop('disabled',profile==='copy' || profile==='mobile_1080');
     function value(key){return form.find('[name="basic_transcode_'+key+'"]').val();}
-    var names={copy:'원본 유지 · 영상/음성 코덱 변환 없음',copy_video_aac:'영상 원본 + 음성 AAC 변환',mobile_cpu:'H.264/AAC 사용자 설정',mobile_1080:'원본 해상도 H.264/AAC 고정 프로필'};
-    var detail=profile==='mobile_cpu' ? ' · '+(value('height')==='0' ? '원본 해상도' : value('height')+'p 이하')+' · 영상 '+value('video_kbps')+'kbps / 최대 '+value('max_kbps')+'kbps' : '';
+    var names={copy:'원본 유지 · 영상/음성 코덱 변환 없음',copy_video_aac:'영상 원본 + 음성 AAC 변환',mobile_cpu:'H.264/AAC 사용자 설정',mobile_1080:'원본 해상도 H.264/AAC 고정 프로필',mobile_vaapi:'VAAPI H.264/AAC · 영상 GPU 인코딩'};
+    var detail=(profile==='mobile_cpu' || profile==='mobile_vaapi') ? ' · '+(value('height')==='0' ? '원본 해상도' : value('height')+'p 이하')+' · 영상 '+value('video_kbps')+'kbps / 최대 '+value('max_kbps')+'kbps' : '';
     $('#hdhr_transcode_summary').text('현재 선택: '+names[profile]+detail+' · 미리 저장 '+value('delay_seconds')+'초 · 음성 보정 '+value('audio_offset_ms')+'ms');
   }
   form.on('change input','#hdhr_output_profile, [name^="basic_transcode_"]',transcodeSummary);
@@ -265,11 +278,22 @@
     $.ajax({url:root+'transcode_setting_save',type:'POST',dataType:'json',timeout:30000,global:false,
       data:form.serialize()+'&'+$.param({apply_now:apply ? 'yes' : 'no'})
     }).done(function(ret){$('#hdhr_transcode_result').text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
+      if(ret.vaapi) $('#hdhr_vaapi_result').text(ret.vaapi.message).toggleClass('text-danger',!ret.vaapi.available);
     }).fail(function(){$('#hdhr_transcode_result').text('저장에 실패했습니다. 설정값을 확인하고 다시 시도하세요.').addClass('text-danger');
     }).always(function(){$('#hdhr_transcode_save_btn, #hdhr_transcode_apply_btn').prop('disabled',false);});
   }
   $('#hdhr_transcode_save_btn').on('click',function(){saveTranscode(false);});
   $('#hdhr_transcode_apply_btn').on('click',function(){saveTranscode(true);});
+  $('#hdhr_vaapi_driver').on('change',function(){$('#hdhr_vaapi_result').text('드라이버가 변경되었습니다. 실제 변환 검사를 실행하세요.').removeClass('text-danger');});
+  $('#hdhr_vaapi_probe_btn').on('click',function(){
+    var button=$(this).prop('disabled',true);
+    $('#hdhr_vaapi_result').text('테스트 영상을 변환하고 있습니다…').removeClass('text-danger');
+    $.ajax({url:root+'probe_vaapi',type:'POST',dataType:'json',timeout:30000,global:false,
+      data:{basic_vaapi_driver:$('#hdhr_vaapi_driver').val()}
+    }).done(function(ret){$('#hdhr_vaapi_result').text(ret.msg || '검사를 완료했습니다.').toggleClass('text-danger',ret.ret!=='success');
+    }).fail(function(){$('#hdhr_vaapi_result').text('검사 요청에 실패했습니다. 잠시 후 다시 시도하세요.').addClass('text-danger');
+    }).always(function(){button.prop('disabled',false);});
+  });
   function scheduleScanStatus(delay) {
     window.clearTimeout(scanTimer);
     scanTimer=window.setTimeout(scanStatus, delay);

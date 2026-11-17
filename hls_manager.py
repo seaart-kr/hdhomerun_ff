@@ -21,8 +21,10 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
 try:
     from .transcode_config import DEFAULTS, validate_options, video_filter, delayed_playlist
+    from . import vaapi
 except ImportError:
     from transcode_config import DEFAULTS, validate_options, video_filter, delayed_playlist
+    import vaapi
 
 
 class HLSManager:
@@ -37,7 +39,7 @@ class HLSManager:
     DEFAULT_CACHE_ROOT = "/data/tmp/hdhomerun_ff_hls"
     CACHE_ROOT = DEFAULT_CACHE_ROOT
 
-    PROFILES = ("copy", "copy_video_aac", "mobile_cpu", "mobile_1080")
+    PROFILES = ("copy", "copy_video_aac", "mobile_cpu", "mobile_1080", "mobile_vaapi")
     SEGMENT_RE = re.compile(r"^segment_[0-9]{9}\.ts$")
     IDLE_TIMEOUT = 60
     START_TIMEOUT = 25
@@ -51,6 +53,7 @@ class HLSManager:
     _streams: Dict[str, Dict[str, object]] = {}
     _janitor_stop = None
     TRANSCODE = dict(DEFAULTS)
+    VAAPI_DRIVER = 'auto'
 
     @classmethod
     def configure(
@@ -60,6 +63,7 @@ class HLSManager:
         idle_timeout: Optional[int] = None,
         start_timeout: Optional[int] = None,
         transcode_options: Optional[dict] = None,
+        vaapi_driver: Optional[str] = None,
     ) -> Dict[str, object]:
         """Configure runtime paths and bounded lifecycle timeouts.
 
@@ -67,6 +71,8 @@ class HLSManager:
         path containment checks independent of symlinks in a parent directory.
         """
         with cls._lock:
+            if vaapi_driver is not None:
+                cls.VAAPI_DRIVER = vaapi.validate_driver(vaapi_driver)
             if cache_root is not None:
                 value = str(cache_root).strip()
                 if not value:
@@ -87,6 +93,7 @@ class HLSManager:
                 "start_timeout": cls.START_TIMEOUT,
                 "profiles": list(cls.PROFILES),
                 "transcode": dict(cls.TRANSCODE),
+                "vaapi_driver": cls.VAAPI_DRIVER,
             }
 
     @staticmethod
@@ -193,10 +200,13 @@ class HLSManager:
             "0:a:0?",
         ]
 
-        if profile == 'mobile_cpu':
+        if profile in ('mobile_cpu', 'mobile_vaapi'):
             # Bound decoder/filter thread overhead on small NAS CPUs.
             at = command.index('-i')
             command[at:at] = ['-threads', str(cls.TRANSCODE['threads']), '-filter_threads', str(cls.TRANSCODE['threads'])]
+
+        if profile == 'mobile_vaapi':
+            command[1:1] = ['-init_hw_device', 'vaapi=va:' + vaapi.DEVICE, '-filter_hw_device', 'va']
 
         if profile == "copy":
             command.extend(["-c", "copy"])
@@ -205,9 +215,17 @@ class HLSManager:
                 command.extend(['-bsf:a', f'setts=pts=PTS+({offset:.3f})/TB:dts=DTS+({offset:.3f})/TB'])
         elif profile == 'copy_video_aac':
             command.extend(['-c:v', 'copy', '-c:a', 'aac', '-b:a', f"{cls.TRANSCODE['audio_kbps']}k", '-ac','2','-ar','48000'])
+        elif profile == 'mobile_vaapi':
+            fps = {'25':25, '30':30, '50':50, '60':60}.get(cls.TRANSCODE['fps'], 30)
+            command.extend([
+                '-vf', video_filter(cls.TRANSCODE) + ',format=nv12,hwupload',
+                '-c:v', 'h264_vaapi', '-profile:v', 'main', '-bf', '0', '-g', str(fps * 2),
+                '-b:v', f"{cls.TRANSCODE['video_kbps']}k",
+                '-maxrate', f"{cls.TRANSCODE['max_kbps']}k", '-bufsize', f"{cls.TRANSCODE['max_kbps']*2}k",
+                '-c:a', 'aac', '-b:a', f"{cls.TRANSCODE['audio_kbps']}k", '-ac', '2', '-ar', '48000',
+            ])
         else:
-            # Mobile output is deliberately software-only for now.  Hardware
-            # profiles must only be added after a real encoder probe succeeds.
+            # CPU profiles remain available independently of the GPU driver.
             command.extend([
                 "-c:v",
                 "libx264",
@@ -284,6 +302,7 @@ class HLSManager:
             'video': {
                 'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
                 'libx264': 'H.264 · CPU 소프트웨어 인코딩 (libx264)',
+                'h264_vaapi': 'H.264 · GPU 하드웨어 인코딩 (h264_vaapi)',
             }.get(video, video),
             'audio': {
                 'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
@@ -354,6 +373,12 @@ class HLSManager:
         directory = cls.stream_directory(channel, profile)
         now = time.monotonic()
 
+        driver = cls.VAAPI_DRIVER
+        if profile == 'mobile_vaapi':
+            support = vaapi.probe(driver)
+            if not support['available']:
+                return {'ret': 'warning', 'status': 503, 'msg': support['message']}
+
         with cls._lock:
             cls._cleanup_locked(now)
             state = cls._streams.get(key)
@@ -369,12 +394,18 @@ class HLSManager:
                     if source_factory is not None:
                         source, cleanup = source_factory()
                         source = cls._validate_upstream_url(source)
+                    command = cls._build_command(source, directory, profile)
+                    launch_options = {}
+                    if profile == 'mobile_vaapi':
+                        command = vaapi.core_limited_command(command)
+                        launch_options['env'] = vaapi.environment(driver)
                     process = subprocess.Popen(
-                        cls._build_command(source, directory, profile),
+                        command,
                         stdin=subprocess.DEVNULL,
                         stdout=subprocess.DEVNULL,
                         stderr=subprocess.DEVNULL,
                         close_fds=True,
+                        **launch_options,
                     )
                 except Exception:
                     if cleanup is not None:

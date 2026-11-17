@@ -11,6 +11,7 @@ from flask import Response, jsonify, render_template, request
 from plugin import PluginModuleBase, ToolUtil
 
 from .diagnostics import ffmpeg_capabilities
+from . import vaapi
 from .hdhr_control import HDHomeRunControlError, HDHomeRunControlClient
 from .hdhomerun import HDHomeRunClient, HDHomeRunError
 from .hls_manager import HLSManager
@@ -119,6 +120,7 @@ def _hls_options():
     return HLSManager.configure(
         idle_timeout=_as_int(P.ModelSetting.get('basic_hls_idle_timeout'), 60, 30, 600),
         transcode_options=options,
+        vaapi_driver=P.ModelSetting.get('basic_vaapi_driver') or 'auto',
     )
 
 
@@ -126,6 +128,18 @@ def _transcode_form(req):
     return validate_options({key:req.form.get('basic_transcode_'+key,
                              P.ModelSetting.get('basic_transcode_'+key) or default)
                              for key,default in TRANSCODE_DEFAULTS.items()})
+
+
+def _playback_form(req):
+    profile = str(req.form.get('basic_hls_output_profile') or _output_profile())
+    if profile not in HLSManager.PROFILES:
+        raise ValueError('출력 방식을 확인하세요.')
+    driver = vaapi.validate_driver(req.form.get('basic_vaapi_driver') or P.ModelSetting.get('basic_vaapi_driver') or 'auto')
+    if profile == 'mobile_vaapi':
+        result = vaapi.probe(driver)
+        if not result['available']:
+            raise ValueError(result['message'])
+    return profile, driver
 
 
 def _consumer_id(req):
@@ -168,6 +182,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_playlist_source': 'scan',
         'basic_hls_output_profile': 'mobile_cpu',
         'basic_hls_idle_timeout': '60',
+        'basic_vaapi_driver': 'auto',
         **{'basic_transcode_'+key:str(value) for key,value in TRANSCODE_DEFAULTS.items()},
     }
 
@@ -193,6 +208,10 @@ class ModuleBasic(PluginModuleBase):
     @staticmethod
     def _save_settings(req):
         _transcode_form(req)
+        if 'basic_hls_output_profile' in req.form:
+            _playback_form(req)
+        if 'basic_vaapi_driver' in req.form:
+            vaapi.validate_driver(req.form['basic_vaapi_driver'])
         P.ModelSetting.setting_save(req)
         _hls_options()
 
@@ -219,6 +238,7 @@ class ModuleBasic(PluginModuleBase):
             'transcode_presets': PRESETS,
             'transcode_options': options,
             'encoding_profiles': {profile: HLSManager.encoding_summary(profile) for profile in HLSManager.PROFILES},
+            'vaapi_status': vaapi.status(settings.get('basic_vaapi_driver') or 'auto'),
             'page_sub': sub,
             'ajax_sub': self.name,
             'package_name': P.package_name,
@@ -230,6 +250,7 @@ class ModuleBasic(PluginModuleBase):
             'channel_summary': _store().summary(),
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
+            'm3u_vaapi_url': _api_url(f'/{P.package_name}/api/m3u_shyni_vaapi'),
             'm3u_default_url': _api_url(f'/{P.package_name}/api/m3u_shyni'),
         }
 
@@ -254,20 +275,25 @@ class ModuleBasic(PluginModuleBase):
 
             if sub == 'transcode_setting_save':
                 options=_transcode_form(req)
-                profile=str(req.form.get('basic_hls_output_profile') or _output_profile())
-                if profile not in HLSManager.PROFILES:
-                    raise ValueError('출력 방식을 확인하세요.')
+                profile, driver = _playback_form(req)
                 for key,value in options.items():
                     P.ModelSetting.set('basic_transcode_'+key,str(value))
                 P.ModelSetting.set('basic_hls_output_profile',profile)
+                P.ModelSetting.set('basic_vaapi_driver',driver)
                 _hls_options()
                 stopped=0
                 if _is_true(req.form.get('apply_now')):
                     HLSManager.stop_all()
                     stopped=1
-                return jsonify({'ret':'success','options':options,'profile':profile,
+                return jsonify({'ret':'success','options':options,'profile':profile,'vaapi':vaapi.status(driver),
                     'msg':('설정을 저장하고 현재 FF 재생 스트림을 종료했습니다. Shyni에서 재생을 다시 시작하세요.' if stopped else
                            '설정을 저장했습니다. 다음 새 재생부터 적용됩니다. 바로 반영하려면 저장·적용을 누르세요.')})
+
+            if sub == 'probe_vaapi':
+                driver = vaapi.validate_driver(req.form.get('basic_vaapi_driver') or P.ModelSetting.get('basic_vaapi_driver') or 'auto')
+                result = vaapi.probe(driver, force=True)
+                return jsonify({'ret': 'success' if result['available'] else 'warning',
+                                'msg': result['message'], 'vaapi': result})
 
             if sub == 'probe_device':
                 base_url=req.form.get('basic_hdhomerun_base_url') or P.ModelSetting.get('basic_hdhomerun_base_url') or ''
@@ -433,12 +459,14 @@ class ModuleBasic(PluginModuleBase):
                     return Response('아직 수신 주파수가 없습니다.', status=404)
                 return Response(dump_preset(preset), mimetype='application/json', headers={
                     'Content-Disposition':'attachment; filename=hdhomerun-learned.json'})
-            if sub in {'m3u_shyni', 'm3u_shyni_copy', 'm3u_shyni_mobile'}:
+            if sub in {'m3u_shyni', 'm3u_shyni_copy', 'm3u_shyni_mobile', 'm3u_shyni_vaapi'}:
                 profile = _output_profile()
                 if sub == 'm3u_shyni_copy':
                     profile = 'copy'
                 elif sub == 'm3u_shyni_mobile':
                     profile = 'mobile_cpu'
+                elif sub == 'm3u_shyni_vaapi':
+                    profile = 'mobile_vaapi'
                 text = build_shyni_m3u(
                     _playlist_channels(),
                     request.host_url.rstrip('/'),
