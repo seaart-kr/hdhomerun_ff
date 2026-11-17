@@ -133,6 +133,16 @@
         </div>
         <div class="border rounded p-3 mb-3">
           <h5>트랜스코딩 / 저장 버퍼 설정</h5>
+          {% set encoding = encoding_profiles[arg.get('basic_hls_output_profile', 'mobile_cpu')] %}
+          <div class="border rounded p-2 mb-2" aria-live="polite" aria-atomic="true">
+            <strong>선택한 출력의 코덱 / 하드웨어 가속</strong>
+            <dl class="row mb-0 mt-2">
+              <dt class="col-sm-3">영상</dt><dd class="col-sm-9" id="hdhr_video_encoding">{{ encoding.video }}</dd>
+              <dt class="col-sm-3">음성</dt><dd class="col-sm-9" id="hdhr_audio_encoding">{{ encoding.audio }}</dd>
+              <dt class="col-sm-3">VAAPI</dt><dd class="col-sm-9 mb-0" id="hdhr_vaapi_encoding">{{ '사용' if encoding.vaapi else '미사용' }}</dd>
+            </dl>
+            <small class="form-text text-muted">선택한 출력으로 새 재생을 시작할 때의 정보입니다. 원본 유지(copy)는 재인코딩하지 않습니다. FFmpeg가 VAAPI를 지원하더라도 현재 변환 프로필은 CPU를 사용합니다.</small>
+          </div>
           <div class="alert alert-info py-2" id="hdhr_transcode_summary"></div>
           <div class="form-row">
             <div class="form-group col-md-4"><label>최대 영상 해상도</label><select class="form-control transcode-video-option" name="basic_transcode_height">
@@ -220,6 +230,7 @@
   var scanRequest=null;
   var scanActionPending=false;
   var scanRetries=0;
+  var encodingProfiles={{ encoding_profiles|tojson }};
   function renderDevice(device,counts){
     if (!device) return;
     ['friendly_name','model_number','device_id','firmware_version','base_url','checked_at','tuner_count','tuner_limit'].forEach(function(key){$('#hdhr_info_'+key).text(device[key]===undefined ? '-' : device[key]);});
@@ -235,6 +246,12 @@
   }
   function transcodeSummary(){
     var profile=$('#hdhr_output_profile').val();
+    var encoding=encodingProfiles[profile];
+    if (encoding) {
+      $('#hdhr_video_encoding').text(encoding.video);
+      $('#hdhr_audio_encoding').text(encoding.audio);
+      $('#hdhr_vaapi_encoding').text(encoding.vaapi ? '사용' : '미사용');
+    }
     $('.transcode-video-option').prop('disabled',profile!=='mobile_cpu');
     $('.transcode-audio-option').prop('disabled',profile==='copy' || profile==='mobile_1080');
     function value(key){return form.find('[name="basic_transcode_'+key+'"]').val();}

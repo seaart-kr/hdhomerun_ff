@@ -267,6 +267,32 @@ class HLSManager:
         return cls._build_command(upstream_url, directory, output_profile)
 
     @classmethod
+    def encoding_summary(cls, output_profile: object) -> dict:
+        """Describe a new stream from its encoder arguments, without starting it."""
+        command = cls.build_command('http://127.0.0.1/live', 'encoding-preview', output_profile)
+
+        def encoder(stream):
+            for flag in ('-c:' + stream, '-c'):
+                if flag in command:
+                    return command[command.index(flag) + 1]
+            return ''
+
+        video, audio = encoder('v'), encoder('a')
+        return {
+            'video_encoder': video,
+            'audio_encoder': audio,
+            'video': {
+                'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
+                'libx264': 'H.264 · CPU 소프트웨어 인코딩 (libx264)',
+            }.get(video, video),
+            'audio': {
+                'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
+                'aac': 'AAC · CPU 소프트웨어 인코딩 (aac)',
+            }.get(audio, audio),
+            'vaapi': any(value == 'vaapi' or value.endswith('_vaapi') for value in command),
+        }
+
+    @classmethod
     def _stream_identity(cls, channel_id: object, output_profile: object) -> Tuple[str, str, str]:
         channel = cls._validate_channel_id(channel_id)
         profile = cls.normalize_profile(output_profile)

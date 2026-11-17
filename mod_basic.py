@@ -218,6 +218,7 @@ class ModuleBasic(PluginModuleBase):
             'playable_channel_count':len(_playlist_channels()),
             'transcode_presets': PRESETS,
             'transcode_options': options,
+            'encoding_profiles': {profile: HLSManager.encoding_summary(profile) for profile in HLSManager.PROFILES},
             'page_sub': sub,
             'ajax_sub': self.name,
             'package_name': P.package_name,
