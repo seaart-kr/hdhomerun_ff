@@ -11,7 +11,7 @@ setting = {
     'home_module': 'basic',
     'menu': {
         'uri': __package__,
-        'name': 'HDHomeRun FF',
+        'name': 'HDHomeRun Live for Shyni',
         'list': [
             {
                 'uri': 'basic',

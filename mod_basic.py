@@ -243,7 +243,7 @@ class ModuleBasic(PluginModuleBase):
             )
         except Exception as exc:
             logger.exception('[hdhomerun_ff] menu failed: %s', exc)
-            return Response(f'HDHomeRun FF menu error: {exc}', status=500, mimetype='text/plain')
+            return Response(f'HDHomeRun Live for Shyni menu error: {exc}', status=500, mimetype='text/plain')
 
     def process_ajax(self, sub, req):
         try:

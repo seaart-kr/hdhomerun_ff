@@ -1,11 +1,11 @@
-# HDHomeRun FF
+# HDHomeRun Live for Shyni
 
 FF(FlaskFarm)에서 HDHomeRun 채널을 직접 읽고, Shyni 라이브 TV에 넣을 M3U/HLS 주소를 제공하는 플러그인입니다.
 
 ## 목표 흐름
 
 ```text
-HDHomeRun → HDHomeRun FF → FFmpeg → Shyni용 M3U/HLS
+HDHomeRun → HDHomeRun Live for Shyni → FFmpeg → Shyni용 M3U/HLS
 ```
 
 TVHeadend는 이 플러그인의 재생 경로에 필요하지 않습니다. 기존 `tvh_m3u_plugin`과는 별도 DB·API·HLS 캐시를 사용하므로 함께 설치할 수 있습니다.
