@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 DEFAULTS = dict(height=720, video_kbps=3000, max_kbps=4000, audio_kbps=128,
-                fps='30', preset='ultrafast', threads=2, delay_seconds=12, window_seconds=180,
+                fps='30', preset='ultrafast', threads=2, delay_seconds=4, window_seconds=180,
                 audio_offset_ms=0)
 PRESETS = ('ultrafast', 'superfast', 'veryfast', 'faster', 'fast', 'medium')
 

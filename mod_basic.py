@@ -24,7 +24,7 @@ from .device_config import tuner_budget, discovery_summary, broadcast_counts, us
 from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_options
 from .setup import P, logger
 from .task import snapshot_channel_rows
-from .channel_groups import fetch_rules as fetch_group_rules
+from .channel_groups import GROUP_ORDER, fetch_rules as fetch_group_rules
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -188,6 +188,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hls_output_profile': 'mobile_cpu',
         'basic_hls_idle_timeout': '60',
         'basic_vaapi_driver': 'auto',
+        'basic_startup_buffer_version': '',
         **{'basic_transcode_'+key:str(value) for key,value in TRANSCODE_DEFAULTS.items()},
     }
 
@@ -198,6 +199,10 @@ class ModuleBasic(PluginModuleBase):
         """Prepare local state after FF has loaded the plugin settings."""
         try:
             _store().init_db()
+            if P.ModelSetting.get('basic_startup_buffer_version') != '1':
+                if P.ModelSetting.get('basic_transcode_delay_seconds') == '12':
+                    P.ModelSetting.set('basic_transcode_delay_seconds', str(TRANSCODE_DEFAULTS['delay_seconds']))
+                P.ModelSetting.set('basic_startup_buffer_version', '1')
             _hls_options()
             logger.info('[hdhomerun_ff] local channel store is ready')
         except Exception:
@@ -255,6 +260,7 @@ class ModuleBasic(PluginModuleBase):
             'scan_export_url': _api_url(f'/{P.package_name}/api/scan_preset.json'),
             'channel_summary': _store().summary(),
             'group_rules_updated_time': _store().group_rules()['updated_time'],
+            'group_names': list(dict.fromkeys([*GROUP_ORDER, *(c['group_name'] for c in channels)])),
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
             'm3u_vaapi_url': _api_url(f'/{P.package_name}/api/m3u_shyni_vaapi'),
@@ -284,8 +290,31 @@ class ModuleBasic(PluginModuleBase):
                 device_id = P.ModelSetting.get('basic_hdhomerun_device_id')
                 channels = [c for c in store.list_channels() if c['device_id'] == device_id]
                 grouped = sum(c['group_name'] != '그룹 없음' for c in channels)
-                return jsonify({'ret': 'success', 'msg': f'공용 기준표를 저장했습니다. 현재 장비 {len(channels)}개 채널 중 {grouped}개에 그룹이 있습니다.',
-                                'grouped': grouped, 'total': len(channels)})
+                icons = sum(bool(c['logo_url']) for c in channels)
+                return jsonify({'ret': 'success', 'msg': f'그룹·아이콘 기준표를 저장했습니다. 현재 장비 {len(channels)}개 중 그룹 {grouped}개, 아이콘 {icons}개를 적용했습니다.',
+                                'grouped': grouped, 'icons': icons, 'total': len(channels)})
+
+            if sub == 'set_channel_logo':
+                channel_id = str(req.form.get('channel_id') or '').strip()
+                if not channel_id:
+                    raise ValueError('채널 ID가 없습니다.')
+                store = _store()
+                if not store.set_logo(channel_id, req.form.get('logo_url') or ''):
+                    return jsonify({'ret': 'warning', 'msg': '채널을 찾지 못했습니다.'})
+                channel = next(c for c in store.list_channels() if c['channel_id'] == channel_id)
+                return jsonify({'ret': 'success', 'msg': '아이콘을 저장했습니다.' if channel['logo_override'] else '자동 아이콘으로 돌아갔습니다.',
+                                'logo_url': channel['logo_url'], 'logo_override': channel['logo_override']})
+
+            if sub == 'set_channel_group':
+                channel_id = str(req.form.get('channel_id') or '').strip()
+                if not channel_id:
+                    raise ValueError('채널 ID가 없습니다.')
+                store = _store()
+                if not store.set_group(channel_id, req.form.get('group_name') or ''):
+                    return jsonify({'ret': 'warning', 'msg': '채널을 찾지 못했습니다.'})
+                channel = next(c for c in store.list_channels() if c['channel_id'] == channel_id)
+                return jsonify({'ret': 'success', 'msg': '수동 그룹을 저장했습니다.' if channel['manual_group_name'] else '자동 그룹으로 돌아갔습니다.',
+                                'group_name': channel['group_name'], 'manual_group_name': channel['manual_group_name']})
 
             if sub == 'setting_save':
                 self._save_settings(req)

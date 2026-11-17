@@ -16,9 +16,9 @@ from pathlib import Path
 from typing import Any, Iterable
 
 try:
-    from .channel_groups import effective_group
+    from .channel_groups import effective_group, effective_logo, logo_url
 except ImportError:
-    from channel_groups import effective_group
+    from channel_groups import effective_group, effective_logo, logo_url
 
 
 def default_db_path() -> str:
@@ -76,6 +76,10 @@ class ChannelStore:
             columns = {row['name'] for row in connection.execute('PRAGMA table_info(hdhomerun_ff_channel)')}
             if 'selected' not in columns:
                 connection.execute('ALTER TABLE hdhomerun_ff_channel ADD COLUMN selected INTEGER DEFAULT NULL')
+            if 'logo_override' not in columns:
+                connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN logo_override TEXT NOT NULL DEFAULT ''")
+            if 'manual_group_name' not in columns:
+                connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN manual_group_name TEXT NOT NULL DEFAULT ''")
             connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_device (
                 device_id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT '{}'
             )''')
@@ -276,7 +280,7 @@ class ChannelStore:
         with self._connection() as connection:
             rows = connection.execute(
                 f'''SELECT channel_id, device_id, guide_number, name, source_url, logo_url,
-                           video_codec, audio_codec, group_name, enabled, selected, raw_data,
+                           video_codec, audio_codec, group_name, manual_group_name, enabled, selected, logo_override, raw_data,
                            created_time, updated_time
                     FROM hdhomerun_ff_channel {where}
                     ORDER BY CAST(guide_number AS REAL), guide_number, name, channel_id'''
@@ -291,7 +295,8 @@ class ChannelStore:
                 item['raw_data'] = {}
             item['enabled'] = bool(item['enabled'])
             item['selected'] = self._selected(item)
-            item['group_name'] = effective_group(item['name'], item['group_name'], rules)
+            item['group_name'] = item['manual_group_name'] or effective_group(item['name'], item['group_name'], rules)
+            item['logo_url'] = effective_logo(item['name'], item['logo_override'], item['logo_url'], rules)
             result.append(item)
         return result
 
@@ -305,13 +310,34 @@ class ChannelStore:
         return {'rules': {}, 'updated_time': ''}
 
     def save_group_rules(self, rules: dict[str, Any]) -> None:
-        if not isinstance(rules, dict) or not any(rules.get(key) for key in ('master_exact', 'alias_exact', 'master_norm', 'alias_norm')):
+        if not isinstance(rules, dict) or not (any(rules.get(key) for key in ('master_exact', 'alias_exact', 'master_norm', 'alias_norm')) or any(rules.get('_logos', {}).values())):
             raise ValueError('빈 그룹 기준표로 기존 분류를 교체할 수 없습니다.')
         self.init_db()
         with self._connection() as connection:
             connection.execute('''INSERT INTO hdhomerun_ff_group_rules (id, rules, updated_time)
                 VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET rules=excluded.rules, updated_time=excluded.updated_time''',
                 (json.dumps(rules, ensure_ascii=False), now_str()))
+
+    def set_logo(self, channel_id: str, value: str) -> bool:
+        value = str(value or '').strip()
+        url = logo_url(value, shared=False)
+        if value and not url:
+            raise ValueError('아이콘은 http 또는 https 주소를 입력하세요. 비워서 저장하면 자동 아이콘으로 돌아갑니다.')
+        self.init_db()
+        with self._connection() as connection:
+            changed = connection.execute('UPDATE hdhomerun_ff_channel SET logo_override = ?, updated_time = ? WHERE channel_id = ?',
+                                         (url, now_str(), str(channel_id or '').strip())).rowcount
+        return changed == 1
+
+    def set_group(self, channel_id: str, value: str) -> bool:
+        value = str(value or '').strip()
+        if len(value) > 100 or any(c in value for c in '\r\n\x00'):
+            raise ValueError('그룹명은 줄바꿈 없이 100자 이내로 입력하세요.')
+        self.init_db()
+        with self._connection() as connection:
+            changed = connection.execute('UPDATE hdhomerun_ff_channel SET manual_group_name = ?, updated_time = ? WHERE channel_id = ?',
+                                         (value, now_str(), str(channel_id or '').strip())).rowcount
+        return changed == 1
 
     @staticmethod
     def _selected(item: dict[str, Any]) -> bool:
@@ -351,7 +377,8 @@ class ChannelStore:
         except (TypeError, ValueError):
             item['raw_data'] = {}
         item['enabled'] = bool(item['enabled'])
-        item['group_name'] = effective_group(item['name'], item['group_name'], self.group_rules()['rules'])
+        item['group_name'] = item['manual_group_name'] or effective_group(item['name'], item['group_name'], self.group_rules()['rules'])
+        item['logo_url'] = effective_logo(item['name'], item['logo_override'], item['logo_url'], self.group_rules()['rules'])
         return item
 
     def set_enabled(self, channel_id: str, enabled: bool) -> bool:

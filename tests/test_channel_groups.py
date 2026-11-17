@@ -109,5 +109,26 @@ class ChannelGroupsTest(unittest.TestCase):
         self.assertLess(text.index('group-title="종합편성"'),text.index('group-title="뉴스/경제"'))
         self.assertLess(text.index('group-title="뉴스/경제"'),text.index('group-title="그룹 없음"'))
 
+    def test_manual_group_survives_rescan_catalog_refresh_and_can_reset(self):
+        self.store.replace_device_channels('box',[channel('KBS 1')])
+        self.store.save_group_rules(self.rules)
+        self.store.set_group('test','내 즐겨찾기')
+        self.store.replace_device_channels('box',[channel('KBS 1')])
+        self.store.save_group_rules(self.rules)
+        reopened=ChannelStore(self.store.path)
+        row=reopened.list_channels()[0]
+        self.assertEqual(row['manual_group_name'],'내 즐겨찾기')
+        self.assertEqual(row['group_name'],'내 즐겨찾기')
+        text=build_shyni_m3u(reopened.playback_channels(),'http://ff.example','hdhomerun_ff')
+        self.assertIn('group-title="내 즐겨찾기"',text)
+        reopened.set_group('test','')
+        self.assertEqual(reopened.get_channel('test')['group_name'],'지상파')
+
+    def test_manual_group_rejects_invalid_values_and_missing_channels(self):
+        self.store.replace_device_channels('box',[channel('KBS 1')])
+        for value in ['x'*101,'group\ninjection','group\x00']:
+            with self.subTest(value=value),self.assertRaises(ValueError):self.store.set_group('test',value)
+        self.assertFalse(self.store.set_group('missing','내 그룹'))
+
 
 if __name__=='__main__':unittest.main()

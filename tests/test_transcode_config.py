@@ -4,6 +4,13 @@ from hls_manager import HLSManager
 
 
 class TranscodeOptionsTest(unittest.TestCase):
+    def test_default_startup_provides_six_seconds_after_ten_seconds_of_video(self):
+        self.assertEqual(DEFAULTS['delay_seconds']+HLSManager.MIN_READY_SEGMENTS*HLSManager.HLS_TIME,10)
+        def playlist(count):
+            return '#EXTM3U\n'+''.join(f'#EXTINF:2.0,\nsegment_{i:09d}.ts\n' for i in range(count))
+        self.assertEqual(delayed_playlist(playlist(4),DEFAULTS['delay_seconds']), '')
+        self.assertEqual(delayed_playlist(playlist(5),DEFAULTS['delay_seconds']).count('#EXTINF:'),3)
+
     def test_invalid_options_are_rejected_before_command_building(self):
         for key,value in [('preset','ultrafast;echo bad'),('height',721),('fps','300'),
                            ('max_kbps',1000),('delay_seconds',90),('audio_offset_ms',3000)]:

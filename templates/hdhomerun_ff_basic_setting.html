@@ -188,7 +188,7 @@
             <div class="form-group col-md-4"><label>음성 싱크 보정 (ms)</label><input class="form-control" type="number" min="-2000" max="2000" step="50" name="basic_transcode_audio_offset_ms" value="{{ arg.get('basic_transcode_audio_offset_ms') }}"><small class="form-text text-muted">음성이 입보다 늦으면 음수, 빠르면 양수. 예: -100. 기본 0.</small></div>
           </div>
           <div class="form-row">
-            <div class="form-group col-md-6"><label>미리 저장하고 보낼 영상 길이 (초)</label><input class="form-control" type="number" min="0" max="30" step="2" name="basic_transcode_delay_seconds" value="{{ arg.get('basic_transcode_delay_seconds') }}"><small class="form-text text-muted">기본 12초. 최신 영상 조각을 바로 보내지 않고 이만큼 먼저 저장합니다. 값이 크면 방송 지연과 초기 대기가 늘어납니다.</small></div>
+            <div class="form-group col-md-6"><label>미리 저장하고 보낼 영상 길이 (초)</label><input class="form-control" type="number" min="0" max="30" step="2" name="basic_transcode_delay_seconds" value="{{ arg.get('basic_transcode_delay_seconds') }}"><small class="form-text text-muted">기본 4초 + 플레이어에 보낼 영상 6초 = 약 10초 준비. 원본 연결·플레이어의 추가 대기는 별도이며 값이 크면 초기 대기도 늘어납니다.</small></div>
             <div class="form-group col-md-6"><label>최근 영상 보관 창 (초)</label><input class="form-control" type="number" min="120" max="600" step="30" name="basic_transcode_window_seconds" value="{{ arg.get('basic_transcode_window_seconds') }}"><small class="form-text text-muted">기본 180초 순환 저장. 오래된 조각은 자동 삭제됩니다.</small></div>
           </div>
           <p class="small text-muted">영상 세부 설정은 CPU 사용자 설정과 VAAPI 모드에 적용됩니다. CPU 변환 속도와 스레드 수는 CPU 모드 전용입니다. 음성 싱크와 저장 버퍼는 원본 모드에도 적용됩니다. 원본 음성 싱크 보정에는 FFmpeg setts 필터가 필요합니다. 출력 방식을 바꾸면 Shyni 채널 목록도 새로고침하세요.</p>
@@ -222,23 +222,36 @@
     <div class="card-body table-responsive">
       <p class="small text-muted">사용할 채널을 체크하세요. 변경은 즉시 저장되고 다시 스캔해도 선택이 유지됩니다. 새 스캔 채널은 이름이 있으면 기본 선택됩니다.</p>
       <div class="mb-3">
-        <button type="button" class="btn btn-outline-primary" id="hdhr_group_refresh_btn">기본 그룹 불러오기 / 갱신</button>
+        <button type="button" class="btn btn-outline-primary" id="hdhr_group_refresh_btn">기본 그룹 / 아이콘 불러오기 · 갱신</button>
         <span class="ml-2 small text-muted">{% if group_rules_updated_time %}기준표 저장: {{ group_rules_updated_time }}{% else %}기본 그룹 기준표를 한 번 불러오세요.{% endif %}</span>
         <div id="hdhr_group_result" class="mt-2 small" role="status" aria-live="polite"></div>
-        <small class="form-text text-muted">TVH M3U와 같은 공용 기준표로 채널명·별칭을 매칭합니다. 한 번 불러오면 새 채널도 자동 분류됩니다. 일치하지 않는 채널은 그룹 없음으로 표시하며 기존에 지정한 그룹은 유지합니다. 다른 플러그인은 설치하지 않아도 됩니다.</small>
+        <small class="form-text text-muted">TVH M3U와 같은 공용 기준표로 채널명·별칭을 매칭합니다. 한 번 불러오면 새 채널에도 그룹·아이콘이 적용됩니다. 공용 아이콘은 기존 M3U 플러그인의 GitHub 이미지를 사용합니다. 아이콘 주소를 직접 저장하면 자동 아이콘보다 우선하며 비워서 저장하면 자동으로 돌아갑니다. 다른 플러그인은 설치하지 않아도 됩니다.</small>
       </div>
       <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
-      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>이름</th><th>그룹</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
+      <datalist id="hdhr_group_names">{% for group in group_names %}<option value="{{ group }}">{% endfor %}</datalist>
+      <p class="small text-muted">그룹은 목록에서 고르거나 새 이름을 입력해 저장하세요. 비워서 저장하면 자동 분류로 돌아갑니다. 변경 후 Shyni에서 M3U 채널 목록을 새로고침하세요.</p>
+      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>아이콘</th><th>이름</th><th>그룹</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
       {% for channel in channels %}<tr>
         <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
         <td>{{ channel.guide_number }}</td>
+        <td style="min-width:210px">
+          <img class="hdhr-channel-logo mb-1 {% if not channel.logo_url %}d-none{% endif %}" {% if channel.logo_url %}src="{{ channel.logo_url }}"{% endif %} alt="{{ channel.name }} 아이콘" style="max-width:80px;max-height:40px" loading="lazy" referrerpolicy="no-referrer">
+          <input class="form-control form-control-sm hdhr-channel-logo-url" type="url" value="{{ channel.logo_override }}" placeholder="자동 아이콘 · 직접 지정할 URL" aria-label="{{ channel.name }} 아이콘 주소">
+          <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-logo-save mt-1" data-channel-id="{{ channel.channel_id }}">아이콘 저장</button>
+          <div class="hdhr-channel-logo-result small mt-1" role="status" aria-live="polite">{{ '수동 지정' if channel.logo_override else '자동' }}</div>
+        </td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% else %}{{ channel.name }}{% endif %}</td>
-        <td>{{ channel.group_name }}</td>
+        <td style="min-width:180px">
+          <div class="hdhr-channel-group-name mb-1">{{ channel.group_name }}{% if channel.manual_group_name %} · 수동{% endif %}</div>
+          <input class="form-control form-control-sm hdhr-channel-group-input" list="hdhr_group_names" value="{{ channel.manual_group_name }}" placeholder="자동 · 그룹 선택 또는 입력" aria-label="{{ channel.name }} 수동 그룹">
+          <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-group-save mt-1" data-channel-id="{{ channel.channel_id }}">그룹 저장</button>
+          <div class="hdhr-channel-group-result small mt-1" role="status" aria-live="polite"></div>
+        </td>
         <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
         <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' %}사용 선택 시 FF 재생{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
       </tr>{% endfor %}
-      {% if not channels %}<tr><td colspan="8" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
+      {% if not channels %}<tr><td colspan="9" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
     </div>
   </div>
@@ -398,6 +411,37 @@
     }).always(function(){scanActionPending=false;scheduleScanStatus(100);});
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
+  $('.hdhr-channel-group-save').on('click', function(){
+    var button=$(this).prop('disabled',true), cell=button.closest('td');
+    var status=cell.find('.hdhr-channel-group-result');
+    status.text('저장 중…').removeClass('text-danger');
+    $.ajax({url:root+'set_channel_group',type:'POST',dataType:'json',timeout:15000,global:false,
+      data:{channel_id:button.attr('data-channel-id'),group_name:cell.find('.hdhr-channel-group-input').val()}
+    }).done(function(ret){
+      status.text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
+      if(ret.ret==='success') {
+        cell.find('.hdhr-channel-group-input').val(ret.manual_group_name || '');
+        cell.find('.hdhr-channel-group-name').text(ret.group_name+(ret.manual_group_name ? ' · 수동' : ''));
+        if(ret.manual_group_name) $('<option>').val(ret.manual_group_name).appendTo('#hdhr_group_names');
+      }
+    }).fail(function(){status.text('그룹 저장에 실패했습니다.').addClass('text-danger');
+    }).always(function(){button.prop('disabled',false);});
+  });
+  $('.hdhr-channel-logo-save').on('click', function(){
+    var button=$(this).prop('disabled',true), cell=button.closest('td');
+    var status=cell.find('.hdhr-channel-logo-result');
+    status.text('저장 중…').removeClass('text-danger');
+    $.ajax({url:root+'set_channel_logo',type:'POST',dataType:'json',timeout:15000,global:false,
+      data:{channel_id:button.attr('data-channel-id'),logo_url:cell.find('.hdhr-channel-logo-url').val()}
+    }).done(function(ret){
+      status.text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
+      if(ret.ret==='success') {
+        cell.find('.hdhr-channel-logo-url').val(ret.logo_override || '');
+        cell.find('.hdhr-channel-logo').attr('src',ret.logo_url || '').toggleClass('d-none',!ret.logo_url);
+      }
+    }).fail(function(){status.text('아이콘 저장에 실패했습니다.').addClass('text-danger');
+    }).always(function(){button.prop('disabled',false);});
+  });
   $('#hdhr_group_refresh_btn').on('click', function(){
     var button=$(this).prop('disabled',true);
     $('#hdhr_group_result').text('공용 채널 기준표를 불러오고 있습니다…').removeClass('text-danger');

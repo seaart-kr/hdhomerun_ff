@@ -18,6 +18,32 @@ GROUP_ORDER = (
     '뉴스/경제', '음악', '어린이/만화', '교양/다큐', '교육', '여성/패션',
     '레저', '공공', '종교', '홈쇼핑', '해외위성', '라디오', '기타', '그룹 없음',
 )
+GITHUB_ASSETS = 'https://raw.githubusercontent.com/seaart-kr/tvh_m3u_plugin/main/docs/assets/'
+
+
+def logo_url(value, *, shared=True):
+    """Turn shared FF asset paths into standalone GitHub URLs."""
+    text = str(value or '').strip()
+    if not text or len(text) > 4096 or any(c in text for c in '\r\n\x00'):
+        return ''
+    try:
+        parts = urllib.parse.urlsplit(text)
+        for prefix in ('/customlogo/', '/tvh_m3u_plugin/docs/assets/', '/blob/main/docs/assets/'):
+            if prefix in parts.path:
+                if not shared and not prefix.startswith('/blob/'):
+                    continue
+                # A GitHub blob path is only meaningful for the shared repo.
+                if prefix.startswith('/blob/') and not (parts.hostname == 'github.com' and parts.path.startswith('/seaart-kr/tvh_m3u_plugin/')):
+                    continue
+                relative = urllib.parse.unquote(parts.path.split(prefix, 1)[1])
+                if not relative or any(p in ('', '.', '..') for p in relative.split('/')) or '\\' in relative or any(c in relative for c in '\r\n\x00'):
+                    return ''
+                return GITHUB_ASSETS + urllib.parse.quote(relative, safe='/')
+        if parts.scheme not in ('http', 'https') or not parts.hostname or parts.username or parts.password:
+            return ''
+        return text
+    except ValueError:
+        return ''
 
 
 def normalize_name(value):
@@ -45,6 +71,7 @@ def parse_rules(payload):
     if not isinstance(source, dict):
         raise ValueError('공용 채널 기준표 형식을 확인하세요. 기존 그룹을 유지합니다.')
     rules = {bucket: {} for bucket in BUCKETS}
+    logos = {bucket: {} for bucket in BUCKETS}
     for bucket in BUCKETS:
         entries = source.get(bucket) or {}
         if not isinstance(entries, dict):
@@ -53,12 +80,21 @@ def parse_rules(payload):
             if not isinstance(item, dict):
                 continue
             group = normalize_group(item.get('group_name') or item.get('group_category'))
-            if not group or '미사용' in group or '미사용' in str(item.get('receive_category') or ''):
+            if '미사용' in group or '미사용' in str(item.get('receive_category') or ''):
                 continue
             key = normalize_name(name) if bucket.endswith('_norm') else str(name).strip().lower()
-            if key and len(key) <= 256 and len(group) <= 100 and not any(c in group for c in '\r\n\x00'):
+            if not key or len(key) > 256:
+                continue
+            if group and len(group) <= 100 and not any(c in group for c in '\r\n\x00'):
                 rules[bucket][key] = group
-    if not any(rules.values()):
+            for field in ('custom_logo_url', 'provider_logo_url', 'final_logo_url'):
+                url = logo_url(item.get(field))
+                if url:
+                    logos[bucket][key] = url
+                    break
+    if any(logos.values()):
+        rules['_logos'] = logos
+    if not any(rules[bucket] for bucket in BUCKETS) and not any(logos.values()):
         raise ValueError('분류 가능한 공용 채널 기준표가 없습니다. 기존 그룹을 유지합니다.')
     return rules
 
@@ -86,6 +122,18 @@ def effective_group(name, stored_group, rules):
         if group:
             return group
     return '그룹 없음'
+
+
+def effective_logo(name, override, original, rules):
+    manual = logo_url(override, shared=False)
+    if manual:
+        return manual
+    exact, normalized = str(name or '').strip().lower(), normalize_name(name)
+    for bucket in BUCKETS:
+        url = logo_url(rules.get('_logos', {}).get(bucket, {}).get(normalized if bucket.endswith('_norm') else exact))
+        if url:
+            return url
+    return logo_url(original)
 
 
 def group_sort_key(channel):
