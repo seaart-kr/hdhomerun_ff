@@ -17,8 +17,10 @@ from typing import Any, Iterable
 
 try:
     from .channel_groups import effective_group, effective_logo, logo_url
+    from .playlist import validate_profile_override
 except ImportError:
     from channel_groups import effective_group, effective_logo, logo_url
+    from playlist import validate_profile_override
 
 
 def default_db_path() -> str:
@@ -80,12 +82,17 @@ class ChannelStore:
                 connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN logo_override TEXT NOT NULL DEFAULT ''")
             if 'manual_group_name' not in columns:
                 connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN manual_group_name TEXT NOT NULL DEFAULT ''")
+            if 'output_profile' not in columns:
+                connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN output_profile TEXT NOT NULL DEFAULT ''")
             connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_device (
                 device_id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT '{}'
             )''')
             connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_group_rules (
                 id INTEGER PRIMARY KEY CHECK (id = 1), rules TEXT NOT NULL,
                 updated_time TEXT NOT NULL
+            )''')
+            connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_group_profile (
+                group_name TEXT PRIMARY KEY, output_profile TEXT NOT NULL
             )''')
             connection.execute(
                 """
@@ -280,7 +287,7 @@ class ChannelStore:
         with self._connection() as connection:
             rows = connection.execute(
                 f'''SELECT channel_id, device_id, guide_number, name, source_url, logo_url,
-                           video_codec, audio_codec, group_name, manual_group_name, enabled, selected, logo_override, raw_data,
+                           video_codec, audio_codec, group_name, manual_group_name, output_profile, enabled, selected, logo_override, raw_data,
                            created_time, updated_time
                     FROM hdhomerun_ff_channel {where}
                     ORDER BY CAST(guide_number AS REAL), guide_number, name, channel_id'''
@@ -337,6 +344,33 @@ class ChannelStore:
         with self._connection() as connection:
             changed = connection.execute('UPDATE hdhomerun_ff_channel SET manual_group_name = ?, updated_time = ? WHERE channel_id = ?',
                                          (value, now_str(), str(channel_id or '').strip())).rowcount
+        return changed == 1
+
+    def group_profiles(self) -> dict[str, str]:
+        self.init_db()
+        with self._connection() as connection:
+            return dict(connection.execute('SELECT group_name,output_profile FROM hdhomerun_ff_group_profile'))
+
+    def set_group_profile(self, group_name: str, profile: str) -> None:
+        group_name = str(group_name or '').strip()
+        if not group_name or len(group_name) > 100 or any(c in group_name for c in '\r\n\x00'):
+            raise ValueError('올바른 그룹명을 입력하세요.')
+        profile = validate_profile_override(profile)
+        self.init_db()
+        with self._connection() as connection:
+            if profile:
+                connection.execute('''INSERT INTO hdhomerun_ff_group_profile (group_name,output_profile)
+                    VALUES (?,?) ON CONFLICT(group_name) DO UPDATE SET output_profile=excluded.output_profile''',
+                    (group_name, profile))
+            else:
+                connection.execute('DELETE FROM hdhomerun_ff_group_profile WHERE group_name=?', (group_name,))
+
+    def set_channel_profile(self, channel_id: str, profile: str) -> bool:
+        profile = validate_profile_override(profile)
+        self.init_db()
+        with self._connection() as connection:
+            changed = connection.execute('UPDATE hdhomerun_ff_channel SET output_profile=?,updated_time=? WHERE channel_id=?',
+                                         (profile, now_str(), str(channel_id or '').strip())).rowcount
         return changed == 1
 
     @staticmethod

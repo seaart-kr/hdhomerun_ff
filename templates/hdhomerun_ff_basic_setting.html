@@ -1,6 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
 {% set current_page = page_sub|default('device', true) %}
+{% macro output_options(current, inherit_label) %}
+  <option value="" {% if not current %}selected{% endif %}>{{ inherit_label }}</option>
+  {% for value,label in output_profile_labels.items() %}
+    {% if value != 'mobile_nvenc' or nvenc_status.available or current == value %}
+    <option value="{{ value }}" {% if current == value %}selected{% endif %} {% if value == 'mobile_nvenc' and not nvenc_status.available %}disabled{% endif %}>{{ label }}{% if value == 'mobile_nvenc' and not nvenc_status.available %} · 재검사 필요{% endif %}</option>
+    {% endif %}
+  {% endfor %}
+{% endmacro %}
 <div class="container-fluid" style="max-width:1100px">
   <div class="card mb-3">
     <div class="card-body">
@@ -123,7 +131,7 @@
           </div>
         </div>
         <div class="form-group row">
-          <label class="col-sm-3 col-form-label">Shyni 기본 출력</label>
+          <label class="col-sm-3 col-form-label">기본 출력 · 채널/그룹 지정이 없을 때</label>
           <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile" id="hdhr_output_profile">
             <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 변환 · 아래 사용자 설정 적용 (Shyni 권장)</option>
             <option value="mobile_vaapi" {% if arg.get('basic_hls_output_profile') == 'mobile_vaapi' %}selected{% endif %}>H.264/AAC VAAPI · 영상 GPU 인코딩 (실제 변환 검사 필요)</option>
@@ -137,6 +145,7 @@
         </div>
         <div class="border rounded p-3 mb-3">
           <h5>트랜스코딩 / 저장 버퍼 설정</h5>
+          <p class="small text-muted">화질·비트레이트 설정은 변환하도록 지정한 채널에 공통으로 적용됩니다. 기본 출력이 원본 유지여도 그룹/채널 변환용 설정을 조정할 수 있습니다. 원본 패스는 영상·음성을 재인코딩하지 않습니다.</p>
           {% set encoding = encoding_profiles[arg.get('basic_hls_output_profile', 'mobile_cpu')] %}
           <div class="border rounded p-2 mb-2" aria-live="polite" aria-atomic="true">
             <strong>선택한 출력의 코덱 / 하드웨어 가속</strong>
@@ -204,13 +213,24 @@
         <button type="button" class="btn btn-primary" id="hdhr_save_btn">설정 저장</button>
         <hr>
         <div><strong>Shyni 기본 M3U:</strong> <code>{{ m3u_default_url }}</code></div>
-        <small class="form-text text-muted">위 출력 방식 선택을 반영하려면 Shyni 기본 M3U를 사용하고 Shyni의 채널 목록을 새로고침하세요. 변환 전용/원본 전용 주소는 각각 해당 출력으로 고정됩니다.</small>
+        <small class="form-text text-muted">채널별 지정 → 그룹별 지정 → 기본 출력 순서로 반영합니다. 혼합 출력을 쓰려면 이 기본 M3U를 Shyni에 등록하고 채널 목록을 새로고침하세요. CPU·VAAPI·NVIDIA·원본 전용 주소는 각각 고정 출력이라 채널/그룹 설정을 따르지 않습니다.</small>
         <details class="my-2"><summary>고급: 원본 전용 M3U · 트랜스코딩하지 않음</summary><code>{{ m3u_copy_url }}</code></details>
         <div><strong>H.264/AAC 변환 전용 M3U (Shyni 권장):</strong> <code>{{ m3u_mobile_url }}</code></div>
         <div class="mt-2"><strong>VAAPI H.264/AAC 전용 M3U:</strong> <code>{{ m3u_vaapi_url }}</code></div>
         <div class="mt-2 {% if not nvenc_status.available %}d-none{% endif %}" id="hdhr_nvenc_m3u"><strong>NVIDIA H.264/AAC 전용 M3U · 시험 기능:</strong> <code>{{ m3u_nvenc_url }}</code></div>
         <small class="form-text text-muted">VAAPI 전용 주소는 영상 GPU 인코딩으로 고정됩니다. 기존 CPU 변환 전용 주소는 CPU 모드를 유지합니다.</small>
         <small class="form-text text-muted">현재 M3U에 제공하는 채널: {{ playable_channel_count }}개. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
+        <div class="border rounded p-3 mt-3">
+          <h5>그룹별 출력 방식</h5>
+          <p class="small text-muted">예: 기본 출력을 원본 유지로 저장하고 지상파만 VAAPI 변환으로 지정하면 나머지는 원본입니다. 스포츠도 원본 유지를 직접 지정할 수 있습니다. 채널별 지정이 있으면 그룹보다 우선합니다. GPU 출력은 실제 변환 검사를 통과하고 드라이버 설정을 저장한 뒤 지정하세요.</p>
+          <table class="table table-sm"><thead><tr><th>그룹</th><th>출력 방식</th><th>저장</th></tr></thead><tbody>
+          {% for group in profile_group_names %}<tr>
+            <td>{{ group }}</td>
+            <td><select class="form-control form-control-sm hdhr-profile-select hdhr-group-profile" aria-label="{{ group }} 그룹 출력">{{ output_options(group_profiles.get(group, ''), '기본 출력 따름') }}</select></td>
+            <td><button type="button" class="btn btn-sm btn-outline-primary hdhr-group-profile-save" data-group-name="{{ group }}">그룹 출력 저장</button><div class="hdhr-profile-result small mt-1" role="status" aria-live="polite"></div></td>
+          </tr>{% endfor %}
+          </tbody></table>
+        </div>
       </div>
     </div>
     {% endif %}
@@ -230,7 +250,7 @@
       <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
       <datalist id="hdhr_group_names">{% for group in group_names %}<option value="{{ group }}">{% endfor %}</datalist>
       <p class="small text-muted">그룹은 목록에서 고르거나 새 이름을 입력해 저장하세요. 비워서 저장하면 자동 분류로 돌아갑니다. 변경 후 Shyni에서 M3U 채널 목록을 새로고침하세요.</p>
-      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>아이콘</th><th>이름</th><th>그룹</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
+      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>아이콘</th><th>이름</th><th>그룹</th><th>출력 방식</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
       {% for channel in channels %}<tr>
         <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
         <td>{{ channel.guide_number }}</td>
@@ -247,11 +267,17 @@
           <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-group-save mt-1" data-channel-id="{{ channel.channel_id }}">그룹 저장</button>
           <div class="hdhr-channel-group-result small mt-1" role="status" aria-live="polite"></div>
         </td>
+        <td style="min-width:230px">
+          <select class="form-control form-control-sm hdhr-profile-select hdhr-channel-profile" aria-label="{{ channel.name }} 출력">{{ output_options(channel.output_profile, '그룹 / 기본 출력 따름') }}</select>
+          <button type="button" class="btn btn-sm btn-outline-primary hdhr-channel-profile-save mt-1" data-channel-id="{{ channel.channel_id }}">채널 출력 저장</button>
+          <div class="hdhr-channel-profile-summary small mt-1">적용: {{ output_profile_labels[channel.effective_output_profile] }}</div>
+          <div class="hdhr-profile-result small mt-1" role="status" aria-live="polite"></div>
+        </td>
         <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
         <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' %}사용 선택 시 FF 재생{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
       </tr>{% endfor %}
-      {% if not channels %}<tr><td colspan="9" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
+      {% if not channels %}<tr><td colspan="10" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
     </div>
   </div>
@@ -296,9 +322,7 @@
       $('#hdhr_vaapi_encoding').text(encoding.vaapi ? '사용' : '미사용');
       $('#hdhr_nvenc_encoding').text(encoding.nvenc ? '사용' : '미사용');
     }
-    $('.transcode-video-option').prop('disabled',['mobile_cpu','mobile_vaapi','mobile_nvenc'].indexOf(profile)===-1);
-    $('.transcode-cpu-option').prop('disabled',profile!=='mobile_cpu');
-    $('.transcode-audio-option').prop('disabled',profile==='copy' || profile==='mobile_1080');
+    $('.transcode-video-option, .transcode-cpu-option, .transcode-audio-option').prop('disabled',false);
     function value(key){return form.find('[name="basic_transcode_'+key+'"]').val();}
     var names={copy:'원본 유지 · 영상/음성 코덱 변환 없음',copy_video_aac:'영상 원본 + 음성 AAC 변환',mobile_cpu:'H.264/AAC 사용자 설정',mobile_1080:'원본 해상도 H.264/AAC 고정 프로필',mobile_vaapi:'VAAPI H.264/AAC · 영상 GPU 인코딩',mobile_nvenc:'NVIDIA H.264/AAC · 시험 기능'};
     var detail=(['mobile_cpu','mobile_vaapi','mobile_nvenc'].indexOf(profile)!==-1) ? ' · '+(value('height')==='0' ? '원본 해상도' : value('height')+'p 이하')+' · 영상 '+value('video_kbps')+'kbps / 최대 '+value('max_kbps')+'kbps' : '';
@@ -327,9 +351,18 @@
       if(available){
         if(!option.length) option=$('<option>').val('mobile_nvenc').appendTo('#hdhr_output_profile');
         option.prop('disabled',false).text('H.264/AAC NVIDIA · NVDEC / CUDA / NVENC · 시험 기능');
+        $('.hdhr-profile-select').each(function(){
+          var select=$(this), entry=select.find('option[value="mobile_nvenc"]');
+          if(!entry.length) entry=$('<option>').val('mobile_nvenc').appendTo(select);
+          entry.prop('disabled',false).text('H.264/AAC · NVIDIA 변환 (시험)');
+        });
       } else if(option.is(':selected')) {
         option.prop('disabled',true).text('H.264/AAC NVIDIA · 시험 기능 (재검사 필요)');
       } else { option.remove(); }
+      if(!available) $('.hdhr-profile-select option[value="mobile_nvenc"]').each(function(){
+        var entry=$(this);
+        if(entry.is(':selected')) entry.prop('disabled',true).text('NVIDIA 변환 · 재검사 필요'); else entry.remove();
+      });
       $('#hdhr_nvenc_m3u').toggleClass('d-none',!available);
       transcodeSummary();
     }).fail(function(){$('#hdhr_nvenc_result').text('검사 요청에 실패했습니다. 잠시 후 다시 시도하세요.').addClass('text-danger');
@@ -411,6 +444,23 @@
     }).always(function(){scanActionPending=false;scheduleScanStatus(100);});
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
+  $('.hdhr-channel-profile-save, .hdhr-group-profile-save').on('click', function(){
+    var button=$(this).prop('disabled',true), row=button.closest('tr');
+    var isChannel=button.hasClass('hdhr-channel-profile-save');
+    var select=row.find(isChannel ? '.hdhr-channel-profile' : '.hdhr-group-profile');
+    var status=row.find('.hdhr-profile-result');
+    var profile=select.val();
+    if(profile===null){status.text('GPU 실제 변환 검사를 먼저 실행하세요.').addClass('text-danger');button.prop('disabled',false);return;}
+    var data={output_profile:profile};
+    if(isChannel) data.channel_id=button.attr('data-channel-id'); else data.group_name=button.attr('data-group-name');
+    status.text('저장 중…').removeClass('text-danger');
+    $.ajax({url:root+(isChannel ? 'set_channel_profile' : 'set_group_profile'),type:'POST',dataType:'json',timeout:45000,global:false,data:data
+    }).done(function(ret){
+      status.text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
+      if(ret.ret==='success' && isChannel) row.find('.hdhr-channel-profile-summary').text('적용: '+ret.effective_output_label);
+    }).fail(function(){status.text('출력 설정을 저장하지 못했습니다.').addClass('text-danger');
+    }).always(function(){button.prop('disabled',false);});
+  });
   $('.hdhr-channel-group-save').on('click', function(){
     var button=$(this).prop('disabled',true), cell=button.closest('td');
     var status=cell.find('.hdhr-channel-group-result');
@@ -422,6 +472,7 @@
       if(ret.ret==='success') {
         cell.find('.hdhr-channel-group-input').val(ret.manual_group_name || '');
         cell.find('.hdhr-channel-group-name').text(ret.group_name+(ret.manual_group_name ? ' · 수동' : ''));
+        cell.closest('tr').find('.hdhr-channel-profile-summary').text('적용: '+ret.effective_output_label);
         if(ret.manual_group_name) $('<option>').val(ret.manual_group_name).appendTo('#hdhr_group_names');
       }
     }).fail(function(){status.text('그룹 저장에 실패했습니다.').addClass('text-danger');

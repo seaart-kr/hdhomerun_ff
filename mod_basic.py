@@ -16,7 +16,8 @@ from .hdhr_control import HDHomeRunControlError, HDHomeRunControlClient
 from .hdhomerun import HDHomeRunClient, HDHomeRunError
 from .hls_manager import HLSManager
 from .model import ChannelStore
-from .playlist import build_shyni_m3u, normalise_output_profile
+from .playlist import (build_shyni_m3u, normalise_output_profile, resolve_output_profile,
+                       validate_profile_override, OUTPUT_PROFILE_LABELS)
 from .preset import PresetValidationError, list_bundled_presets, load_bundled_preset, korean_full_scan_preset, dump_preset
 from .preset_scan_runner import PresetScanRunner
 from .raw_stream import RawStreamSession, NativeStreamSession, probe_http_format
@@ -136,6 +137,11 @@ def _playback_form(req):
     if profile not in HLSManager.PROFILES:
         raise ValueError('출력 방식을 확인하세요.')
     driver = vaapi.validate_driver(req.form.get('basic_vaapi_driver') or P.ModelSetting.get('basic_vaapi_driver') or 'auto')
+    _check_profile_support(profile, driver)
+    return profile, driver
+
+
+def _check_profile_support(profile, driver):
     if profile == 'mobile_vaapi':
         result = vaapi.probe(driver)
         if not result['available']:
@@ -144,7 +150,14 @@ def _playback_form(req):
         result = nvenc.probe()
         if not result['available']:
             raise ValueError(result['message'])
-    return profile, driver
+
+
+def _profile_override(req):
+    if 'output_profile' not in req.form:
+        raise ValueError('출력 방식을 선택하세요.')
+    profile = validate_profile_override(req.form['output_profile'])
+    _check_profile_support(profile, P.ModelSetting.get('basic_vaapi_driver') or 'auto')
+    return profile
 
 
 def _consumer_id(req):
@@ -232,6 +245,9 @@ class ModuleBasic(PluginModuleBase):
     def _menu_arg(self, sub):
         settings = P.ModelSetting.to_dict()
         channels = [c for c in _store().list_channels() if c['device_id']==settings.get('basic_hdhomerun_device_id')]
+        group_profiles = _store().group_profiles()
+        for channel in channels:
+            channel['effective_output_profile'] = resolve_output_profile(channel, group_profiles, _output_profile())
         settings['basic_hls_output_profile'] = _output_profile()
         settings['basic_hls_idle_timeout'] = str(_as_int(settings.get('basic_hls_idle_timeout'), 60, 30, 600))
         options=_hls_options()['transcode']
@@ -261,6 +277,9 @@ class ModuleBasic(PluginModuleBase):
             'channel_summary': _store().summary(),
             'group_rules_updated_time': _store().group_rules()['updated_time'],
             'group_names': list(dict.fromkeys([*GROUP_ORDER, *(c['group_name'] for c in channels)])),
+            'output_profile_labels': OUTPUT_PROFILE_LABELS,
+            'group_profiles': group_profiles,
+            'profile_group_names': list(dict.fromkeys([*(c['group_name'] for c in channels), *group_profiles, *GROUP_ORDER])),
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
             'm3u_vaapi_url': _api_url(f'/{P.package_name}/api/m3u_shyni_vaapi'),
@@ -283,6 +302,25 @@ class ModuleBasic(PluginModuleBase):
 
     def process_ajax(self, sub, req):
         try:
+            if sub == 'set_channel_profile':
+                channel_id = str(req.form.get('channel_id') or '').strip()
+                if not channel_id:
+                    raise ValueError('채널 ID가 없습니다.')
+                profile = _profile_override(req)
+                store = _store()
+                if not store.set_channel_profile(channel_id, profile):
+                    return jsonify({'ret': 'warning', 'msg': '채널을 찾지 못했습니다.'})
+                channel = next(c for c in store.list_channels() if c['channel_id'] == channel_id)
+                effective = resolve_output_profile(channel, store.group_profiles(), _output_profile())
+                return jsonify({'ret': 'success', 'effective_output_profile': effective,
+                                'effective_output_label': OUTPUT_PROFILE_LABELS[effective],
+                                'msg': '채널 출력을 저장했습니다. Shyni 기본 M3U 목록을 새로고침하고 다시 재생하세요.'})
+
+            if sub == 'set_group_profile':
+                profile = _profile_override(req)
+                _store().set_group_profile(req.form.get('group_name'), profile)
+                return jsonify({'ret': 'success', 'msg': '그룹 출력을 저장했습니다. Shyni 기본 M3U 목록을 새로고침하고 다시 재생하세요.'})
+
             if sub == 'refresh_channel_groups':
                 rules = fetch_group_rules()
                 store = _store()
@@ -313,8 +351,10 @@ class ModuleBasic(PluginModuleBase):
                 if not store.set_group(channel_id, req.form.get('group_name') or ''):
                     return jsonify({'ret': 'warning', 'msg': '채널을 찾지 못했습니다.'})
                 channel = next(c for c in store.list_channels() if c['channel_id'] == channel_id)
+                effective = resolve_output_profile(channel, store.group_profiles(), _output_profile())
                 return jsonify({'ret': 'success', 'msg': '수동 그룹을 저장했습니다.' if channel['manual_group_name'] else '자동 그룹으로 돌아갔습니다.',
-                                'group_name': channel['group_name'], 'manual_group_name': channel['manual_group_name']})
+                                'group_name': channel['group_name'], 'manual_group_name': channel['manual_group_name'],
+                                'effective_output_label': OUTPUT_PROFILE_LABELS[effective]})
 
             if sub == 'setting_save':
                 self._save_settings(req)
@@ -513,6 +553,11 @@ class ModuleBasic(PluginModuleBase):
                     'Content-Disposition':'attachment; filename=hdhomerun-learned.json'})
             if sub in {'m3u_shyni', 'm3u_shyni_copy', 'm3u_shyni_mobile', 'm3u_shyni_vaapi', 'm3u_shyni_nvenc'}:
                 profile = _output_profile()
+                channels = _playlist_channels()
+                overrides = None
+                if sub == 'm3u_shyni':
+                    group_profiles = _store().group_profiles()
+                    overrides = {c['channel_id']: resolve_output_profile(c, group_profiles, profile) for c in channels}
                 if sub == 'm3u_shyni_copy':
                     profile = 'copy'
                 elif sub == 'm3u_shyni_mobile':
@@ -521,23 +566,24 @@ class ModuleBasic(PluginModuleBase):
                     profile = 'mobile_vaapi'
                 elif sub == 'm3u_shyni_nvenc':
                     profile = 'mobile_nvenc'
-                if profile == 'mobile_nvenc':
+                if profile == 'mobile_nvenc' and overrides is None:
                     support = nvenc.probe()
                     if not support['available']:
                         return Response(support['message'], status=503, mimetype='text/plain')
                 text = build_shyni_m3u(
-                    _playlist_channels(),
+                    channels,
                     request.host_url.rstrip('/'),
                     P.package_name,
                     api_key=str(req.args.get('apikey') or '').strip(),
                     output_profile=profile,
                     consumer_id=_consumer_id(req),
+                    profile_overrides=overrides,
                 )
                 return Response(
                     text,
                     mimetype='audio/x-mpegurl',
                     headers={
-                        'Content-Disposition': f'inline; filename=hdhomerun_shyni_{profile}.m3u',
+                        'Content-Disposition': f'inline; filename=hdhomerun_shyni_{"default" if overrides is not None else profile}.m3u',
                         'Cache-Control': 'no-store',
                     },
                 )
