@@ -203,10 +203,11 @@ class HLSManager:
         if profile in ('mobile_cpu', 'mobile_vaapi'):
             # Bound decoder/filter thread overhead on small NAS CPUs.
             at = command.index('-i')
-            command[at:at] = ['-threads', str(cls.TRANSCODE['threads']), '-filter_threads', str(cls.TRANSCODE['threads'])]
+            threads = '2' if profile == 'mobile_vaapi' else str(cls.TRANSCODE['threads'])
+            command[at:at] = ['-threads', threads, '-filter_threads', threads]
 
         if profile == 'mobile_vaapi':
-            command[1:1] = ['-init_hw_device', 'vaapi=va:' + vaapi.DEVICE, '-filter_hw_device', 'va']
+            command[1:1] = vaapi.input_arguments()
 
         if profile == "copy":
             command.extend(["-c", "copy"])
@@ -218,7 +219,7 @@ class HLSManager:
         elif profile == 'mobile_vaapi':
             fps = {'25':25, '30':30, '50':50, '60':60}.get(cls.TRANSCODE['fps'], 30)
             command.extend([
-                '-vf', video_filter(cls.TRANSCODE) + ',format=nv12,hwupload',
+                '-vf', vaapi.video_filter(cls.TRANSCODE),
                 '-c:v', 'h264_vaapi', '-profile:v', 'main', '-bf', '0', '-g', str(fps * 2),
                 '-b:v', f"{cls.TRANSCODE['video_kbps']}k",
                 '-maxrate', f"{cls.TRANSCODE['max_kbps']}k", '-bufsize', f"{cls.TRANSCODE['max_kbps']*2}k",
@@ -302,7 +303,7 @@ class HLSManager:
             'video': {
                 'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
                 'libx264': 'H.264 · CPU 소프트웨어 인코딩 (libx264)',
-                'h264_vaapi': 'H.264 · GPU 하드웨어 인코딩 (h264_vaapi)',
+                'h264_vaapi': 'H.264 · GPU 디코딩·전처리·인코딩 (h264_vaapi)',
             }.get(video, video),
             'audio': {
                 'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
@@ -429,7 +430,12 @@ class HLSManager:
                 cls._streams[key] = state
                 cls._start_janitor_locked()
 
-        deadline = time.monotonic() + cls.START_TIMEOUT
+        start_timeout = cls.START_TIMEOUT
+        if profile == 'mobile_vaapi':
+            # A cold tuner and MPEG-TS analysis precede filling the delayed
+            # playlist; leave time for both without reducing the safety buffer.
+            start_timeout = max(start_timeout, min(60, state['options']['delay_seconds'] + cls.MIN_READY_SEGMENTS * cls.HLS_TIME + 20))
+        deadline = time.monotonic() + start_timeout
         while time.monotonic() < deadline:
             playlist = cls._read_ready_playlist(directory,state.get('options'))
             if playlist:

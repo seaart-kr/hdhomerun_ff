@@ -47,23 +47,25 @@ class VaapiTest(unittest.TestCase):
             vaapi.environment('i965; command')
 
     def test_successful_real_probe_is_cached_and_driver_changes_invalidate_it(self):
-        completed = subprocess.CompletedProcess([], 0, '', '')
+        completed = subprocess.CompletedProcess([], 0, b'test MPEG-2 sample', b'')
         with patch('vaapi.shutil.which', return_value='/usr/bin/ffmpeg'), patch('vaapi.subprocess.run', return_value=completed) as run:
             self.assertTrue(vaapi.probe('i965')['available'])
             self.assertTrue(vaapi.status('i965')['available'])
             self.assertTrue(vaapi.probe('i965')['available'])
-            run.assert_called_once()
+            self.assertEqual(run.call_count, 2)
             command = run.call_args.args[0]
             self.assertIn('h264_vaapi', command)
-            self.assertIn('format=nv12,hwupload', command)
+            self.assertIn('-hwaccel_output_format', command)
+            self.assertEqual(command[command.index('-threads')+1], '2')
+            self.assertIn('deinterlace_vaapi', command[command.index('-vf')+1])
             self.assertIn('resource.setrlimit', command[2])
             self.library.write_bytes(b'changed driver contents')
             self.assertFalse(vaapi.status('i965')['checked'])
             vaapi.probe('i965')
-            self.assertEqual(run.call_count, 2)
+            self.assertEqual(run.call_count, 4)
 
     def test_probe_failure_and_timeout_do_not_report_support(self):
-        with patch('vaapi.shutil.which', return_value='/usr/bin/ffmpeg'), patch('vaapi.subprocess.run', return_value=subprocess.CompletedProcess([], -6, '', 'driver failed')):
+        with patch('vaapi.shutil.which', return_value='/usr/bin/ffmpeg'), patch('vaapi.subprocess.run', side_effect=[subprocess.CompletedProcess([], 0, b'sample', b''), subprocess.CompletedProcess([], -6, b'', b'driver failed')]):
             result = vaapi.probe('i965')
             self.assertFalse(result['available'])
             self.assertIn('driver failed', result['detail'])
@@ -95,7 +97,11 @@ class VaapiTest(unittest.TestCase):
             self.assertIn('h264_vaapi', command)
             self.assertNotIn('libx264', command)
             self.assertNotIn('-preset', command)
-            self.assertIn('format=nv12,hwupload', command[command.index('-vf')+1])
+            self.assertIn('deinterlace_vaapi', command[command.index('-vf')+1])
+            self.assertIn('scale_vaapi', command[command.index('-vf')+1])
+            self.assertNotIn('hwdownload', command)
+            self.assertNotIn('yadif', command[command.index('-vf')+1])
+            self.assertEqual(command[command.index('-threads')+1], '2')
             self.assertEqual(command[command.index('-c:a')+1], 'aac')
             self.assertTrue(HLSManager.encoding_summary('mobile_vaapi')['vaapi'])
         text = build_shyni_m3u([{'channel_id':'test','name':'Test'}], 'http://ff.example', 'hdhomerun_ff', output_profile='mobile_vaapi')
