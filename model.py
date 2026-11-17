@@ -15,6 +15,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
 
+try:
+    from .channel_groups import effective_group
+except ImportError:
+    from channel_groups import effective_group
+
 
 def default_db_path() -> str:
     return os.environ.get('HDHOMERUN_FF_DB_PATH', '/data/db/hdhomerun_ff.db')
@@ -73,6 +78,10 @@ class ChannelStore:
                 connection.execute('ALTER TABLE hdhomerun_ff_channel ADD COLUMN selected INTEGER DEFAULT NULL')
             connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_device (
                 device_id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT '{}'
+            )''')
+            connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_group_rules (
+                id INTEGER PRIMARY KEY CHECK (id = 1), rules TEXT NOT NULL,
+                updated_time TEXT NOT NULL
             )''')
             connection.execute(
                 """
@@ -176,7 +185,9 @@ class ChannelStore:
                         logo_url=excluded.logo_url,
                         video_codec=excluded.video_codec,
                         audio_codec=excluded.audio_codec,
-                        group_name=excluded.group_name,
+                        group_name=CASE WHEN TRIM(hdhomerun_ff_channel.group_name) NOT IN
+                            ('', 'HDHomeRun', 'Preset scan (discovery only)', '그룹 없음')
+                            THEN hdhomerun_ff_channel.group_name ELSE excluded.group_name END,
                         enabled=excluded.enabled,
                         raw_data=excluded.raw_data,
                         updated_time=excluded.updated_time
@@ -270,6 +281,7 @@ class ChannelStore:
                     FROM hdhomerun_ff_channel {where}
                     ORDER BY CAST(guide_number AS REAL), guide_number, name, channel_id'''
             ).fetchall()
+        rules = self.group_rules()['rules']
         result = []
         for row in rows:
             item = dict(row)
@@ -279,8 +291,27 @@ class ChannelStore:
                 item['raw_data'] = {}
             item['enabled'] = bool(item['enabled'])
             item['selected'] = self._selected(item)
+            item['group_name'] = effective_group(item['name'], item['group_name'], rules)
             result.append(item)
         return result
+
+    def group_rules(self) -> dict[str, Any]:
+        """Read the last successful snapshot; menu and playback never use HTTP."""
+        self.init_db()
+        with self._connection() as connection:
+            row = connection.execute('SELECT rules, updated_time FROM hdhomerun_ff_group_rules WHERE id = 1').fetchone()
+        if row:
+            return {'rules': json.loads(row['rules']), 'updated_time': row['updated_time']}
+        return {'rules': {}, 'updated_time': ''}
+
+    def save_group_rules(self, rules: dict[str, Any]) -> None:
+        if not isinstance(rules, dict) or not any(rules.get(key) for key in ('master_exact', 'alias_exact', 'master_norm', 'alias_norm')):
+            raise ValueError('빈 그룹 기준표로 기존 분류를 교체할 수 없습니다.')
+        self.init_db()
+        with self._connection() as connection:
+            connection.execute('''INSERT INTO hdhomerun_ff_group_rules (id, rules, updated_time)
+                VALUES (1, ?, ?) ON CONFLICT(id) DO UPDATE SET rules=excluded.rules, updated_time=excluded.updated_time''',
+                (json.dumps(rules, ensure_ascii=False), now_str()))
 
     @staticmethod
     def _selected(item: dict[str, Any]) -> bool:
@@ -320,6 +351,7 @@ class ChannelStore:
         except (TypeError, ValueError):
             item['raw_data'] = {}
         item['enabled'] = bool(item['enabled'])
+        item['group_name'] = effective_group(item['name'], item['group_name'], self.group_rules()['rules'])
         return item
 
     def set_enabled(self, channel_id: str, enabled: bool) -> bool:

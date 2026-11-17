@@ -221,17 +221,24 @@
     <div class="card-header">채널 목록</div>
     <div class="card-body table-responsive">
       <p class="small text-muted">사용할 채널을 체크하세요. 변경은 즉시 저장되고 다시 스캔해도 선택이 유지됩니다. 새 스캔 채널은 이름이 있으면 기본 선택됩니다.</p>
+      <div class="mb-3">
+        <button type="button" class="btn btn-outline-primary" id="hdhr_group_refresh_btn">기본 그룹 불러오기 / 갱신</button>
+        <span class="ml-2 small text-muted">{% if group_rules_updated_time %}기준표 저장: {{ group_rules_updated_time }}{% else %}기본 그룹 기준표를 한 번 불러오세요.{% endif %}</span>
+        <div id="hdhr_group_result" class="mt-2 small" role="status" aria-live="polite"></div>
+        <small class="form-text text-muted">TVH M3U와 같은 공용 기준표로 채널명·별칭을 매칭합니다. 한 번 불러오면 새 채널도 자동 분류됩니다. 일치하지 않는 채널은 그룹 없음으로 표시하며 기존에 지정한 그룹은 유지합니다. 다른 플러그인은 설치하지 않아도 됩니다.</small>
+      </div>
       <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
-      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>이름</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
+      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>이름</th><th>그룹</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
       {% for channel in channels %}<tr>
         <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
         <td>{{ channel.guide_number }}</td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% else %}{{ channel.name }}{% endif %}</td>
+        <td>{{ channel.group_name }}</td>
         <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
         <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
         <td>{% if channel.raw_data.get('source') == 'preset_scan' %}사용 선택 시 FF 재생{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
       </tr>{% endfor %}
-      {% if not channels %}<tr><td colspan="7" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
+      {% if not channels %}<tr><td colspan="8" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
       </tbody></table>
     </div>
   </div>
@@ -391,6 +398,16 @@
     }).always(function(){scanActionPending=false;scheduleScanStatus(100);});
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
+  $('#hdhr_group_refresh_btn').on('click', function(){
+    var button=$(this).prop('disabled',true);
+    $('#hdhr_group_result').text('공용 채널 기준표를 불러오고 있습니다…').removeClass('text-danger');
+    $.ajax({url:root+'refresh_channel_groups',type:'POST',dataType:'json',timeout:25000,global:false
+    }).done(function(ret){
+      $('#hdhr_group_result').text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
+      if(ret.ret==='success') window.location.reload();
+    }).fail(function(){$('#hdhr_group_result').text('기준표를 불러오지 못했습니다. 기존 그룹을 유지합니다.').addClass('text-danger');
+    }).always(function(){button.prop('disabled',false);});
+  });
   form.on('input','[name="basic_hdhomerun_base_url"]',function(){$('#hdhr_tuner_limit, #hdhr_tuner_limit_save_btn').prop('disabled',true);});
   $('#hdhr_tuner_limit_save_btn').on('click',function(){call('save_tuner_limit','#hdhr_tuner_limit_result',{basic_hdhomerun_tuner_limit:$('#hdhr_tuner_limit').val()});});
   $('#hdhr_lineup_btn').on('click', function(){

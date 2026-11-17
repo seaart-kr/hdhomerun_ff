@@ -24,6 +24,7 @@ from .device_config import tuner_budget, discovery_summary, broadcast_counts, us
 from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_options
 from .setup import P, logger
 from .task import snapshot_channel_rows
+from .channel_groups import fetch_rules as fetch_group_rules
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -253,6 +254,7 @@ class ModuleBasic(PluginModuleBase):
             'learned_mux_count': len(_store().learned_preset(settings.get('basic_hdhomerun_device_id') or '')['muxes']),
             'scan_export_url': _api_url(f'/{P.package_name}/api/scan_preset.json'),
             'channel_summary': _store().summary(),
+            'group_rules_updated_time': _store().group_rules()['updated_time'],
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
             'm3u_vaapi_url': _api_url(f'/{P.package_name}/api/m3u_shyni_vaapi'),
@@ -275,6 +277,16 @@ class ModuleBasic(PluginModuleBase):
 
     def process_ajax(self, sub, req):
         try:
+            if sub == 'refresh_channel_groups':
+                rules = fetch_group_rules()
+                store = _store()
+                store.save_group_rules(rules)
+                device_id = P.ModelSetting.get('basic_hdhomerun_device_id')
+                channels = [c for c in store.list_channels() if c['device_id'] == device_id]
+                grouped = sum(c['group_name'] != '그룹 없음' for c in channels)
+                return jsonify({'ret': 'success', 'msg': f'공용 기준표를 저장했습니다. 현재 장비 {len(channels)}개 채널 중 {grouped}개에 그룹이 있습니다.',
+                                'grouped': grouped, 'total': len(channels)})
+
             if sub == 'setting_save':
                 self._save_settings(req)
                 return jsonify({'ret': 'success', 'msg': '설정을 저장했습니다.'})

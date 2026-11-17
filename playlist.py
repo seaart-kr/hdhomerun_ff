@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from urllib.parse import urlencode
 
+try:
+    from .channel_groups import group_sort_key
+except ImportError:
+    from channel_groups import group_sort_key
+
 
 SUPPORTED_OUTPUT_PROFILES = {'copy', 'copy_video_aac', 'mobile_cpu', 'mobile_1080', 'mobile_vaapi', 'mobile_nvenc'}
 
@@ -23,7 +28,7 @@ def build_shyni_m3u(channels, base_url: str, package_name: str, api_key: str = '
     package_name = str(package_name or '').strip().strip('/')
     profile = normalise_output_profile(output_profile)
     lines = ['#EXTM3U']
-    for channel in channels:
+    for channel in sorted(channels, key=group_sort_key):
         if not channel.get('enabled', True):
             continue
         channel_id = str(channel.get('channel_id') or '').strip()
