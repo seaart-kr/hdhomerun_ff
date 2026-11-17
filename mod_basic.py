@@ -11,7 +11,7 @@ from flask import Response, jsonify, render_template, request
 from plugin import PluginModuleBase, ToolUtil
 
 from .diagnostics import ffmpeg_capabilities
-from . import vaapi
+from . import vaapi, nvenc
 from .hdhr_control import HDHomeRunControlError, HDHomeRunControlClient
 from .hdhomerun import HDHomeRunClient, HDHomeRunError
 from .hls_manager import HLSManager
@@ -139,6 +139,10 @@ def _playback_form(req):
         result = vaapi.probe(driver)
         if not result['available']:
             raise ValueError(result['message'])
+    elif profile == 'mobile_nvenc':
+        result = nvenc.probe()
+        if not result['available']:
+            raise ValueError(result['message'])
     return profile, driver
 
 
@@ -239,6 +243,7 @@ class ModuleBasic(PluginModuleBase):
             'transcode_options': options,
             'encoding_profiles': {profile: HLSManager.encoding_summary(profile) for profile in HLSManager.PROFILES},
             'vaapi_status': vaapi.status(settings.get('basic_vaapi_driver') or 'auto'),
+            'nvenc_status': nvenc.status(),
             'page_sub': sub,
             'ajax_sub': self.name,
             'package_name': P.package_name,
@@ -251,6 +256,7 @@ class ModuleBasic(PluginModuleBase):
             'm3u_copy_url': _api_url(f'/{P.package_name}/api/m3u_shyni_copy'),
             'm3u_mobile_url': _api_url(f'/{P.package_name}/api/m3u_shyni_mobile'),
             'm3u_vaapi_url': _api_url(f'/{P.package_name}/api/m3u_shyni_vaapi'),
+            'm3u_nvenc_url': _api_url(f'/{P.package_name}/api/m3u_shyni_nvenc'),
             'm3u_default_url': _api_url(f'/{P.package_name}/api/m3u_shyni'),
         }
 
@@ -294,6 +300,11 @@ class ModuleBasic(PluginModuleBase):
                 result = vaapi.probe(driver, force=True)
                 return jsonify({'ret': 'success' if result['available'] else 'warning',
                                 'msg': result['message'], 'vaapi': result})
+
+            if sub == 'probe_nvenc':
+                result = nvenc.probe(force=True)
+                return jsonify({'ret': 'success' if result['available'] else 'warning',
+                                'msg': result['message'], 'nvenc': result})
 
             if sub == 'probe_device':
                 base_url=req.form.get('basic_hdhomerun_base_url') or P.ModelSetting.get('basic_hdhomerun_base_url') or ''
@@ -459,7 +470,7 @@ class ModuleBasic(PluginModuleBase):
                     return Response('아직 수신 주파수가 없습니다.', status=404)
                 return Response(dump_preset(preset), mimetype='application/json', headers={
                     'Content-Disposition':'attachment; filename=hdhomerun-learned.json'})
-            if sub in {'m3u_shyni', 'm3u_shyni_copy', 'm3u_shyni_mobile', 'm3u_shyni_vaapi'}:
+            if sub in {'m3u_shyni', 'm3u_shyni_copy', 'm3u_shyni_mobile', 'm3u_shyni_vaapi', 'm3u_shyni_nvenc'}:
                 profile = _output_profile()
                 if sub == 'm3u_shyni_copy':
                     profile = 'copy'
@@ -467,6 +478,12 @@ class ModuleBasic(PluginModuleBase):
                     profile = 'mobile_cpu'
                 elif sub == 'm3u_shyni_vaapi':
                     profile = 'mobile_vaapi'
+                elif sub == 'm3u_shyni_nvenc':
+                    profile = 'mobile_nvenc'
+                if profile == 'mobile_nvenc':
+                    support = nvenc.probe()
+                    if not support['available']:
+                        return Response(support['message'], status=503, mimetype='text/plain')
                 text = build_shyni_m3u(
                     _playlist_channels(),
                     request.host_url.rstrip('/'),

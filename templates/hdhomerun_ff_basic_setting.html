@@ -127,6 +127,9 @@
           <div class="col-sm-9"><select class="form-control" name="basic_hls_output_profile" id="hdhr_output_profile">
             <option value="mobile_cpu" {% if arg.get('basic_hls_output_profile', 'mobile_cpu') == 'mobile_cpu' %}selected{% endif %}>H.264/AAC 변환 · 아래 사용자 설정 적용 (Shyni 권장)</option>
             <option value="mobile_vaapi" {% if arg.get('basic_hls_output_profile') == 'mobile_vaapi' %}selected{% endif %}>H.264/AAC VAAPI · 영상 GPU 인코딩 (실제 변환 검사 필요)</option>
+            {% if nvenc_status.available or arg.get('basic_hls_output_profile') == 'mobile_nvenc' %}
+            <option value="mobile_nvenc" {% if arg.get('basic_hls_output_profile') == 'mobile_nvenc' %}selected{% endif %} {% if not nvenc_status.available %}disabled{% endif %}>H.264/AAC NVIDIA · NVDEC / CUDA / NVENC · 시험 기능{% if not nvenc_status.available %} (재검사 필요){% endif %}</option>
+            {% endif %}
             <option value="copy_video_aac" {% if arg.get('basic_hls_output_profile') == 'copy_video_aac' %}selected{% endif %}>영상 원본 + 음성 AAC 변환 (TV용 저부하 · 원본 AC3 호환 문제 시)</option>
             <option value="mobile_1080" {% if arg.get('basic_hls_output_profile') == 'mobile_1080' %}selected{% endif %}>H.264/AAC 고화질 (원본 해상도 유지 · CPU/통신 부하 높음)</option>
             <option value="copy" {% if arg.get('basic_hls_output_profile') == 'copy' %}selected{% endif %}>원본 유지 (고급 · 코덱 변환 없음)</option>
@@ -141,8 +144,9 @@
               <dt class="col-sm-3">영상</dt><dd class="col-sm-9" id="hdhr_video_encoding">{{ encoding.video }}</dd>
               <dt class="col-sm-3">음성</dt><dd class="col-sm-9" id="hdhr_audio_encoding">{{ encoding.audio }}</dd>
               <dt class="col-sm-3">VAAPI</dt><dd class="col-sm-9 mb-0" id="hdhr_vaapi_encoding">{{ '사용' if encoding.vaapi else '미사용' }}</dd>
+              <dt class="col-sm-3">NVIDIA</dt><dd class="col-sm-9 mb-0" id="hdhr_nvenc_encoding">{{ '사용' if encoding.nvenc else '미사용' }}</dd>
             </dl>
-            <small class="form-text text-muted">선택한 출력으로 새 재생을 시작할 때의 정보입니다. VAAPI 모드는 영상 디코딩·디인터레이스·크기 조절·인코딩을 GPU로 처리하며 AAC 음성은 CPU를 사용합니다. 원본 유지(copy)는 재인코딩하지 않습니다.</small>
+            <small class="form-text text-muted">선택한 출력으로 새 재생을 시작할 때의 정보입니다. VAAPI·NVIDIA 모드는 영상 디코딩·디인터레이스·크기 조절·인코딩을 GPU로 처리하며 AAC 음성은 CPU를 사용합니다. 원본 유지(copy)는 재인코딩하지 않습니다.</small>
           </div>
           <div class="border rounded p-2 mb-2">
             <label for="hdhr_vaapi_driver">VAAPI 드라이버 · GPU 장치 /dev/dri/renderD128</label>
@@ -152,6 +156,12 @@
             <button type="button" class="btn btn-outline-secondary mt-2" id="hdhr_vaapi_probe_btn">VAAPI 실제 변환 검사</button>
             <div id="hdhr_vaapi_result" class="mt-2 small" role="status" aria-live="polite">{{ vaapi_status.message }}</div>
             <small class="form-text text-muted">검사를 통과해야 VAAPI 모드를 저장·재생할 수 있습니다. 검사는 방송 튜너를 사용하지 않습니다. 전용 i965 드라이버는 /data/hdhomerun_ff/vaapi/i965에서 읽으며 이 플러그인의 VAAPI 재생에만 적용합니다.</small>
+          </div>
+          <div class="border rounded p-2 mb-2">
+            <strong>NVIDIA H.264/AAC · 시험 기능</strong>
+            <div><button type="button" class="btn btn-outline-secondary mt-2" id="hdhr_nvenc_probe_btn">NVIDIA 실제 변환 검사</button></div>
+            <div id="hdhr_nvenc_result" class="mt-2 small" role="status" aria-live="polite">{{ nvenc_status.message }}</div>
+            <small class="form-text text-muted">이 서버의 실제 변환 검사를 통과하면 NVIDIA 출력과 전용 M3U가 표시됩니다. 홈런이 없는 상태에서 트랜스코딩만 확인한 시험 기능입니다. 검사는 방송 튜너를 사용하지 않으며 기본 CPU 출력은 자동으로 바뀌지 않습니다.</small>
           </div>
           <div class="alert alert-info py-2" id="hdhr_transcode_summary"></div>
           <div class="form-row">
@@ -198,6 +208,7 @@
         <details class="my-2"><summary>고급: 원본 전용 M3U · 트랜스코딩하지 않음</summary><code>{{ m3u_copy_url }}</code></details>
         <div><strong>H.264/AAC 변환 전용 M3U (Shyni 권장):</strong> <code>{{ m3u_mobile_url }}</code></div>
         <div class="mt-2"><strong>VAAPI H.264/AAC 전용 M3U:</strong> <code>{{ m3u_vaapi_url }}</code></div>
+        <div class="mt-2 {% if not nvenc_status.available %}d-none{% endif %}" id="hdhr_nvenc_m3u"><strong>NVIDIA H.264/AAC 전용 M3U · 시험 기능:</strong> <code>{{ m3u_nvenc_url }}</code></div>
         <small class="form-text text-muted">VAAPI 전용 주소는 영상 GPU 인코딩으로 고정됩니다. 기존 CPU 변환 전용 주소는 CPU 모드를 유지합니다.</small>
         <small class="form-text text-muted">현재 M3U에 제공하는 채널: {{ playable_channel_count }}개. M3U를 Shyni 라이브 TV 주소로 등록하세요.</small>
       </div>
@@ -257,19 +268,20 @@
     if(counts) ['discovered','usable','selected'].forEach(function(key){$('#hdhr_count_'+key).text(counts[key]);});
   }
   function transcodeSummary(){
-    var profile=$('#hdhr_output_profile').val();
+    var profile=$('#hdhr_output_profile option:selected').val();
     var encoding=encodingProfiles[profile];
     if (encoding) {
       $('#hdhr_video_encoding').text(encoding.video);
       $('#hdhr_audio_encoding').text(encoding.audio);
       $('#hdhr_vaapi_encoding').text(encoding.vaapi ? '사용' : '미사용');
+      $('#hdhr_nvenc_encoding').text(encoding.nvenc ? '사용' : '미사용');
     }
-    $('.transcode-video-option').prop('disabled',profile!=='mobile_cpu' && profile!=='mobile_vaapi');
+    $('.transcode-video-option').prop('disabled',['mobile_cpu','mobile_vaapi','mobile_nvenc'].indexOf(profile)===-1);
     $('.transcode-cpu-option').prop('disabled',profile!=='mobile_cpu');
     $('.transcode-audio-option').prop('disabled',profile==='copy' || profile==='mobile_1080');
     function value(key){return form.find('[name="basic_transcode_'+key+'"]').val();}
-    var names={copy:'원본 유지 · 영상/음성 코덱 변환 없음',copy_video_aac:'영상 원본 + 음성 AAC 변환',mobile_cpu:'H.264/AAC 사용자 설정',mobile_1080:'원본 해상도 H.264/AAC 고정 프로필',mobile_vaapi:'VAAPI H.264/AAC · 영상 GPU 인코딩'};
-    var detail=(profile==='mobile_cpu' || profile==='mobile_vaapi') ? ' · '+(value('height')==='0' ? '원본 해상도' : value('height')+'p 이하')+' · 영상 '+value('video_kbps')+'kbps / 최대 '+value('max_kbps')+'kbps' : '';
+    var names={copy:'원본 유지 · 영상/음성 코덱 변환 없음',copy_video_aac:'영상 원본 + 음성 AAC 변환',mobile_cpu:'H.264/AAC 사용자 설정',mobile_1080:'원본 해상도 H.264/AAC 고정 프로필',mobile_vaapi:'VAAPI H.264/AAC · 영상 GPU 인코딩',mobile_nvenc:'NVIDIA H.264/AAC · 시험 기능'};
+    var detail=(['mobile_cpu','mobile_vaapi','mobile_nvenc'].indexOf(profile)!==-1) ? ' · '+(value('height')==='0' ? '원본 해상도' : value('height')+'p 이하')+' · 영상 '+value('video_kbps')+'kbps / 최대 '+value('max_kbps')+'kbps' : '';
     $('#hdhr_transcode_summary').text('현재 선택: '+names[profile]+detail+' · 미리 저장 '+value('delay_seconds')+'초 · 음성 보정 '+value('audio_offset_ms')+'ms');
   }
   form.on('change input','#hdhr_output_profile, [name^="basic_transcode_"]',transcodeSummary);
@@ -284,6 +296,25 @@
   }
   $('#hdhr_transcode_save_btn').on('click',function(){saveTranscode(false);});
   $('#hdhr_transcode_apply_btn').on('click',function(){saveTranscode(true);});
+  $('#hdhr_nvenc_probe_btn').on('click',function(){
+    var button=$(this).prop('disabled',true);
+    $('#hdhr_nvenc_result').text('테스트 영상을 변환하고 있습니다…').removeClass('text-danger');
+    $.ajax({url:root+'probe_nvenc',type:'POST',dataType:'json',timeout:45000,global:false
+    }).done(function(ret){
+      var available=ret.ret==='success' && ret.nvenc && ret.nvenc.available;
+      $('#hdhr_nvenc_result').text(ret.msg || '검사를 완료했습니다.').toggleClass('text-danger',!available);
+      var option=$('#hdhr_output_profile option[value="mobile_nvenc"]');
+      if(available){
+        if(!option.length) option=$('<option>').val('mobile_nvenc').appendTo('#hdhr_output_profile');
+        option.prop('disabled',false).text('H.264/AAC NVIDIA · NVDEC / CUDA / NVENC · 시험 기능');
+      } else if(option.is(':selected')) {
+        option.prop('disabled',true).text('H.264/AAC NVIDIA · 시험 기능 (재검사 필요)');
+      } else { option.remove(); }
+      $('#hdhr_nvenc_m3u').toggleClass('d-none',!available);
+      transcodeSummary();
+    }).fail(function(){$('#hdhr_nvenc_result').text('검사 요청에 실패했습니다. 잠시 후 다시 시도하세요.').addClass('text-danger');
+    }).always(function(){button.prop('disabled',false);});
+  });
   $('#hdhr_vaapi_driver').on('change',function(){$('#hdhr_vaapi_result').text('드라이버가 변경되었습니다. 실제 변환 검사를 실행하세요.').removeClass('text-danger');});
   $('#hdhr_vaapi_probe_btn').on('click',function(){
     var button=$(this).prop('disabled',true);

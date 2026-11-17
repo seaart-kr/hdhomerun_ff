@@ -11,7 +11,7 @@ def ffmpeg_capabilities(timeout: int = 10) -> dict:
     result = {
         'ffmpeg_path': ffmpeg or '',
         'available': bool(ffmpeg),
-        'encoders': {'libx264': False, 'h264_vaapi': False, 'aac': False},
+        'encoders': {'libx264': False, 'h264_vaapi': False, 'h264_nvenc': False, 'aac': False},
         'note': '',
     }
     if not ffmpeg:
@@ -30,7 +30,7 @@ def ffmpeg_capabilities(timeout: int = 10) -> dict:
         text = completed.stdout or ''
         for name in result['encoders']:
             result['encoders'][name] = name in text
-        result['note'] = '실제 VAAPI 인코딩은 별도 진단을 통과한 경우에만 활성화하세요.'
+        result['note'] = 'VAAPI·NVIDIA 하드웨어 변환은 각각 실제 변환 검사를 통과해야 사용할 수 있습니다.'
     except (OSError, subprocess.SubprocessError) as exc:
         result['note'] = f'FFmpeg 진단 실패: {exc}'
     return result

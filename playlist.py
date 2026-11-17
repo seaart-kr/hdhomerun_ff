@@ -5,7 +5,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 
 
-SUPPORTED_OUTPUT_PROFILES = {'copy', 'copy_video_aac', 'mobile_cpu', 'mobile_1080', 'mobile_vaapi'}
+SUPPORTED_OUTPUT_PROFILES = {'copy', 'copy_video_aac', 'mobile_cpu', 'mobile_1080', 'mobile_vaapi', 'mobile_nvenc'}
 
 
 def normalise_output_profile(value: str | None) -> str:

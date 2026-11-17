@@ -21,10 +21,11 @@ from typing import Dict, Optional, Tuple
 from urllib.parse import urlsplit
 try:
     from .transcode_config import DEFAULTS, validate_options, video_filter, delayed_playlist
-    from . import vaapi
+    from . import vaapi, nvenc
 except ImportError:
     from transcode_config import DEFAULTS, validate_options, video_filter, delayed_playlist
     import vaapi
+    import nvenc
 
 
 class HLSManager:
@@ -39,7 +40,7 @@ class HLSManager:
     DEFAULT_CACHE_ROOT = "/data/tmp/hdhomerun_ff_hls"
     CACHE_ROOT = DEFAULT_CACHE_ROOT
 
-    PROFILES = ("copy", "copy_video_aac", "mobile_cpu", "mobile_1080", "mobile_vaapi")
+    PROFILES = ("copy", "copy_video_aac", "mobile_cpu", "mobile_1080", "mobile_vaapi", "mobile_nvenc")
     SEGMENT_RE = re.compile(r"^segment_[0-9]{9}\.ts$")
     IDLE_TIMEOUT = 60
     START_TIMEOUT = 25
@@ -200,14 +201,16 @@ class HLSManager:
             "0:a:0?",
         ]
 
-        if profile in ('mobile_cpu', 'mobile_vaapi'):
+        if profile in ('mobile_cpu', 'mobile_vaapi', 'mobile_nvenc'):
             # Bound decoder/filter thread overhead on small NAS CPUs.
             at = command.index('-i')
-            threads = '2' if profile == 'mobile_vaapi' else str(cls.TRANSCODE['threads'])
+            threads = str(cls.TRANSCODE['threads']) if profile == 'mobile_cpu' else '2'
             command[at:at] = ['-threads', threads, '-filter_threads', threads]
 
         if profile == 'mobile_vaapi':
             command[1:1] = vaapi.input_arguments()
+        elif profile == 'mobile_nvenc':
+            command[1:1] = nvenc.input_arguments()
 
         if profile == "copy":
             command.extend(["-c", "copy"])
@@ -216,15 +219,19 @@ class HLSManager:
                 command.extend(['-bsf:a', f'setts=pts=PTS+({offset:.3f})/TB:dts=DTS+({offset:.3f})/TB'])
         elif profile == 'copy_video_aac':
             command.extend(['-c:v', 'copy', '-c:a', 'aac', '-b:a', f"{cls.TRANSCODE['audio_kbps']}k", '-ac','2','-ar','48000'])
-        elif profile == 'mobile_vaapi':
+        elif profile in ('mobile_vaapi', 'mobile_nvenc'):
             fps = {'25':25, '30':30, '50':50, '60':60}.get(cls.TRANSCODE['fps'], 30)
             command.extend([
-                '-vf', vaapi.video_filter(cls.TRANSCODE),
-                '-c:v', 'h264_vaapi', '-profile:v', 'main', '-bf', '0', '-g', str(fps * 2),
+                '-vf', (nvenc if profile == 'mobile_nvenc' else vaapi).video_filter(cls.TRANSCODE),
+                '-c:v', 'h264_nvenc' if profile == 'mobile_nvenc' else 'h264_vaapi',
+                '-profile:v', 'main', '-bf', '0', '-g', str(fps * 2),
                 '-b:v', f"{cls.TRANSCODE['video_kbps']}k",
                 '-maxrate', f"{cls.TRANSCODE['max_kbps']}k", '-bufsize', f"{cls.TRANSCODE['max_kbps']*2}k",
                 '-c:a', 'aac', '-b:a', f"{cls.TRANSCODE['audio_kbps']}k", '-ac', '2', '-ar', '48000',
             ])
+            if profile == 'mobile_nvenc':
+                command.extend(['-preset', 'fast', '-forced-idr', '1',
+                                '-force_key_frames', 'expr:gte(t,n_forced*2)'])
         else:
             # CPU profiles remain available independently of the GPU driver.
             command.extend([
@@ -304,12 +311,14 @@ class HLSManager:
                 'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
                 'libx264': 'H.264 · CPU 소프트웨어 인코딩 (libx264)',
                 'h264_vaapi': 'H.264 · GPU 디코딩·전처리·인코딩 (h264_vaapi)',
+                'h264_nvenc': 'H.264 · NVIDIA NVDEC·CUDA 전처리·NVENC (h264_nvenc)',
             }.get(video, video),
             'audio': {
                 'copy': '원본 유지 · 채널별 원본 코덱 (copy)',
                 'aac': 'AAC · CPU 소프트웨어 인코딩 (aac)',
             }.get(audio, audio),
             'vaapi': any(value == 'vaapi' or value.endswith('_vaapi') for value in command),
+            'nvenc': video == 'h264_nvenc',
         }
 
     @classmethod
@@ -379,6 +388,10 @@ class HLSManager:
             support = vaapi.probe(driver)
             if not support['available']:
                 return {'ret': 'warning', 'status': 503, 'msg': support['message']}
+        elif profile == 'mobile_nvenc':
+            support = nvenc.probe()
+            if not support['available']:
+                return {'ret': 'warning', 'status': 503, 'msg': support['message']}
 
         with cls._lock:
             cls._cleanup_locked(now)
@@ -400,6 +413,8 @@ class HLSManager:
                     if profile == 'mobile_vaapi':
                         command = vaapi.core_limited_command(command)
                         launch_options['env'] = vaapi.environment(driver)
+                    elif profile == 'mobile_nvenc':
+                        command = vaapi.core_limited_command(command)
                     process = subprocess.Popen(
                         command,
                         stdin=subprocess.DEVNULL,
@@ -431,7 +446,7 @@ class HLSManager:
                 cls._start_janitor_locked()
 
         start_timeout = cls.START_TIMEOUT
-        if profile == 'mobile_vaapi':
+        if profile in ('mobile_vaapi', 'mobile_nvenc'):
             # A cold tuner and MPEG-TS analysis precede filling the delayed
             # playlist; leave time for both without reducing the safety buffer.
             start_timeout = max(start_timeout, min(60, state['options']['delay_seconds'] + cls.MIN_READY_SEGMENTS * cls.HLS_TIME + 20))
