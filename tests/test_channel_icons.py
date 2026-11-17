@@ -1,8 +1,9 @@
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from channel_groups import effective_logo, logo_url, parse_rules, parse_icon_catalog, GITHUB_ASSETS
+from channel_groups import effective_logo, logo_url, parse_rules, parse_icon_catalog, fetch_rules, GITHUB_ASSETS
 from model import ChannelStore
 from playlist import build_shyni_m3u
 
@@ -99,6 +100,28 @@ class ChannelIconsTest(unittest.TestCase):
               {'standard_name':'KBS1','provider':'KT','original_logo_url':'https://kt.example/image.png'}]
         logos=parse_icon_catalog({'provider_logo_local':rows})
         self.assertEqual(effective_logo('KBS1','','',{'_logos':logos}),'https://kt.example/image.png')
+
+    def test_mbn_plus_alias_keeps_preferred_icon_over_lower_priority_exact_name(self):
+        catalog={'tables':{
+            'channel_master':[{'id':1,'standard_name':'MBN PLUS','e_aka':'MBN 플러스'}],
+            'provider_logo_local':[
+                {'matched_channel_id':1,'provider':'KT','stored_filename':'orange.png'},
+                {'standard_name':'MBN 플러스','provider':'WAVVE','stored_filename':'white.png'},
+            ],
+        }}
+        rules={'master_exact':{'mbn plus':'연예/오락'},'_logos':parse_icon_catalog(catalog)}
+        self.store.save_group_rules(rules)
+        cached=ChannelStore(self.store.path).group_rules()['rules']
+        for name in ['MBN PLUS','MBN 플러스','MBN플러스']:
+            with self.subTest(name=name):self.assertEqual(effective_logo(name,'','',cached),GITHUB_ASSETS+'orange.png')
+        self.assertEqual(effective_logo('MBN 플러스','https://my.example/manual.png','',cached),'https://my.example/manual.png')
+
+    def test_catalog_merge_does_not_replace_custom_with_provider_icon(self):
+        metadata={'ret':'success','rules':{'master_exact':{'MBN PLUS':{'group_name':'연예/오락','custom_logo_url':'/customlogo/custom.png'}}}}
+        catalog={'provider_logo_local':[{'standard_name':'MBN PLUS','provider':'KT','stored_filename':'kt.png'}]}
+        with patch('channel_groups._download_catalog',side_effect=[metadata,catalog]):
+            rules=fetch_rules()
+        self.assertEqual(effective_logo('MBN PLUS','','',rules),GITHUB_ASSETS+'custom.png')
 
 
 if __name__=='__main__':unittest.main()

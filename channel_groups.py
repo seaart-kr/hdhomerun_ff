@@ -72,6 +72,7 @@ def parse_rules(payload):
         raise ValueError('공용 채널 기준표 형식을 확인하세요. 기존 그룹을 유지합니다.')
     rules = {bucket: {} for bucket in BUCKETS}
     logos = {bucket: {} for bucket in BUCKETS}
+    priorities = {bucket: {} for bucket in BUCKETS}
     for bucket in BUCKETS:
         entries = source.get(bucket) or {}
         if not isinstance(entries, dict):
@@ -91,8 +92,10 @@ def parse_rules(payload):
                 url = logo_url(item.get(field))
                 if url:
                     logos[bucket][key] = url
+                    priorities[bucket][key] = {'custom_logo_url':0, 'provider_logo_url':5, 'final_logo_url':6}[field]
                     break
     if any(logos.values()):
+        logos['_priorities'] = priorities
         rules['_logos'] = logos
     if not any(rules[bucket] for bucket in BUCKETS) and not any(logos.values()):
         raise ValueError('분류 가능한 공용 채널 기준표가 없습니다. 기존 그룹을 유지합니다.')
@@ -173,6 +176,7 @@ def parse_icon_catalog(payload):
                         logos[bucket][key] = url
     if not any(logos.values()):
         raise ValueError('공용 아이콘 목록에 사용할 이미지가 없습니다. 기존 기준표를 유지합니다.')
+    logos['_priorities'] = scores
     return logos
 
 
@@ -181,7 +185,11 @@ def fetch_rules():
     rules = parse_rules(_download_catalog('match_rules', api_key))
     logos = parse_icon_catalog(_download_catalog('db_dump', api_key))
     for bucket in BUCKETS:
-        logos[bucket] = {**rules.get('_logos', {}).get(bucket, {}), **logos[bucket]}
+        for key, url in rules.get('_logos', {}).get(bucket, {}).items():
+            priority = rules.get('_logos', {}).get('_priorities', {}).get(bucket, {}).get(key, 99)
+            if key not in logos[bucket] or priority < logos['_priorities'][bucket].get(key, 99):
+                logos[bucket][key] = url
+                logos['_priorities'][bucket][key] = priority
     rules['_logos'] = logos
     return rules
 
@@ -203,10 +211,16 @@ def effective_logo(name, override, original, rules):
     if manual:
         return manual
     exact, normalized = str(name or '').strip().lower(), normalize_name(name)
-    for bucket in BUCKETS:
-        url = logo_url(rules.get('_logos', {}).get(bucket, {}).get(normalized if bucket.endswith('_norm') else exact))
+    logos = rules.get('_logos', {})
+    candidates = []
+    for index, bucket in enumerate(BUCKETS):
+        key = normalized if bucket.endswith('_norm') else exact
+        url = logo_url(logos.get(bucket, {}).get(key))
         if url:
-            return url
+            priority = logos.get('_priorities', {}).get(bucket, {}).get(key, 99)
+            candidates.append((priority, index, url))
+    if candidates:
+        return min(candidates)[2]
     return logo_url(original)
 
 
