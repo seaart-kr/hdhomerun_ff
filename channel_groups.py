@@ -99,17 +99,91 @@ def parse_rules(payload):
     return rules
 
 
-def fetch_rules():
-    api_key = os.environ.get('HDHOMERUN_FF_GROUP_APIKEY', PUBLIC_READ_APIKEY).strip()
-    url = RULES_URL + '?' + urllib.parse.urlencode({'apikey': api_key})
+def _download_catalog(endpoint, api_key):
+    url = RULES_URL.rsplit('/', 1)[0] + '/' + endpoint + '?' + urllib.parse.urlencode({'apikey': api_key})
     try:
         with urllib.request.urlopen(url, timeout=20) as response:
             data = response.read(8 * 1024 * 1024 + 1)
         if len(data) > 8 * 1024 * 1024:
             raise ValueError('공용 채널 기준표가 너무 큽니다. 기존 그룹을 유지합니다.')
-        return parse_rules(json.loads(data))
+        return json.loads(data)
     except (OSError, urllib.error.URLError, UnicodeError, json.JSONDecodeError) as exc:
         raise ValueError('공용 채널 기준표 연결에 실패했습니다. 기존 그룹을 유지하며 잠시 후 다시 시도할 수 있습니다.') from exc
+
+
+def parse_icon_catalog(payload):
+    """The shared match endpoint has no icons; reuse its separate logo tables."""
+    if not isinstance(payload, dict) or payload.get('ret', 'success') != 'success':
+        raise ValueError('공용 아이콘 목록을 불러오지 못했습니다. 기존 기준표를 유지합니다.')
+    tables = payload.get('tables', payload)
+    if not isinstance(tables, dict) or not any(key in tables for key in ('custom_logo', 'provider_logo_local')):
+        raise ValueError('공용 아이콘 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
+
+    def rows(table):
+        value = tables.get(table, [])
+        if not isinstance(value, list):
+            raise ValueError('공용 아이콘 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
+        return [row for row in value if isinstance(row, dict)]
+
+    def first(row, *keys):
+        return next((str(row[key]).strip() for key in keys if row.get(key) is not None and str(row[key]).strip()), '')
+
+    def aliases(value):
+        return [name.strip() for name in re.split(r'[|\r\n]+', value) if name.strip()]
+
+    names_by_id = {}
+    ids_by_name = {}
+    for row in rows('channel_master'):
+        identity = first(row, 'id', 'channel_master_id', 'channel_id', 'master_id')
+        name = first(row, 'standard_name', 'channel_name', 'name', 'title')
+        if identity and name:
+            names_by_id.setdefault(identity, []).append((name, False))
+            ids_by_name[name.lower()] = identity
+            for alias in aliases(first(row, 'e_aka', 'aka_names', 'aka_name', 'aliases', 'aka')):
+                names_by_id[identity].append((alias, True))
+    for row in rows('channel_alias'):
+        identity = first(row, 'channel_master_id', 'channel_id', 'matched_channel_id', 'master_id')
+        identity = identity or ids_by_name.get(first(row, 'standard_name', 'channel_name', 'master_name').lower(), '')
+        if identity:
+            for alias in aliases(first(row, 'alias_name', 'aka_name', 'aka_names', 'aka', 'alias', 'name', 'e_aka')):
+                names_by_id.setdefault(identity, []).append((alias, True))
+
+    logos = {bucket: {} for bucket in BUCKETS}
+    scores = {bucket: {} for bucket in BUCKETS}
+    for table in ('custom_logo', 'provider_logo_local'):
+        for row in rows(table):
+            provider = first(row, 'provider', 'provider_name', 'provider_type', 'logo_type', 'source_type').lower()
+            priority = 0 if table == 'custom_logo' or any(k in provider for k in ('custom', 'manual', 'user')) else {'kt':1,'wavve':2,'tving':3,'sk':4}.get(provider, 5)
+            raw_url = first(row, 'logo_url_template', 'custom_logo_url', 'logo_url', 'preview_url', 'local_url', 'stored_path', 'path', 'url')
+            filename = first(row, 'stored_filename', 'filename', 'logo_file', 'file_name')
+            url = logo_url(raw_url) or logo_url('/customlogo/' + filename if filename else '') or logo_url(first(row, 'original_logo_url', 'origin_logo_url'))
+            if not url:
+                continue
+            identity = first(row, 'matched_channel_id', 'channel_master_id', 'channel_id', 'master_id', 'cm_id')
+            names = list(names_by_id.get(identity, []))
+            names.append((first(row, 'standard_name', 'channel_name', 'name'), False))
+            names.append((first(row, 'source_channel_name', 'provider_channel_name', 'original_name', 'source_name'), False))
+            for name, alias in names:
+                if not name or len(name) > 256:
+                    continue
+                prefix = 'alias' if alias else 'master'
+                for bucket, key in ((prefix+'_exact', name.lower()), (prefix+'_norm', normalize_name(name))):
+                    if key and priority <= scores[bucket].get(key, 99):
+                        scores[bucket][key] = priority
+                        logos[bucket][key] = url
+    if not any(logos.values()):
+        raise ValueError('공용 아이콘 목록에 사용할 이미지가 없습니다. 기존 기준표를 유지합니다.')
+    return logos
+
+
+def fetch_rules():
+    api_key = os.environ.get('HDHOMERUN_FF_GROUP_APIKEY', PUBLIC_READ_APIKEY).strip()
+    rules = parse_rules(_download_catalog('match_rules', api_key))
+    logos = parse_icon_catalog(_download_catalog('db_dump', api_key))
+    for bucket in BUCKETS:
+        logos[bucket] = {**rules.get('_logos', {}).get(bucket, {}), **logos[bucket]}
+    rules['_logos'] = logos
+    return rules
 
 
 def effective_group(name, stored_group, rules):

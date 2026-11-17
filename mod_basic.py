@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import re
+from collections import Counter
 from datetime import datetime
 from urllib.parse import urlencode
 
@@ -25,7 +26,7 @@ from .device_config import tuner_budget, discovery_summary, broadcast_counts, us
 from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_options
 from .setup import P, logger
 from .task import snapshot_channel_rows
-from .channel_groups import GROUP_ORDER, fetch_rules as fetch_group_rules
+from .channel_groups import GROUP_ORDER, group_sort_key, fetch_rules as fetch_group_rules
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -245,6 +246,7 @@ class ModuleBasic(PluginModuleBase):
     def _menu_arg(self, sub):
         settings = P.ModelSetting.to_dict()
         channels = [c for c in _store().list_channels() if c['device_id']==settings.get('basic_hdhomerun_device_id')]
+        channels.sort(key=group_sort_key)
         group_profiles = _store().group_profiles()
         for channel in channels:
             channel['effective_output_profile'] = resolve_output_profile(channel, group_profiles, _output_profile())
@@ -271,6 +273,7 @@ class ModuleBasic(PluginModuleBase):
             'package_name': P.package_name,
             'presets': list_bundled_presets(),
             'channels': channels,
+            'group_channel_counts': dict(Counter(c['group_name'] for c in channels)),
             'selected_channel_count': sum(channel['selected'] for channel in channels),
             'learned_mux_count': len(_store().learned_preset(settings.get('basic_hdhomerun_device_id') or '')['muxes']),
             'scan_export_url': _api_url(f'/{P.package_name}/api/scan_preset.json'),

@@ -238,7 +238,7 @@
 
   {% if current_page == 'device' %}
   <div class="card mb-3">
-    <div class="card-header">채널 목록</div>
+    <div class="card-header">채널 목록 · 그룹별</div>
     <div class="card-body table-responsive">
       <p class="small text-muted">사용할 채널을 체크하세요. 변경은 즉시 저장되고 다시 스캔해도 선택이 유지됩니다. 새 스캔 채널은 이름이 있으면 기본 선택됩니다.</p>
       <div class="mb-3">
@@ -251,7 +251,11 @@
       <datalist id="hdhr_group_names">{% for group in group_names %}<option value="{{ group }}">{% endfor %}</datalist>
       <p class="small text-muted">그룹은 목록에서 고르거나 새 이름을 입력해 저장하세요. 비워서 저장하면 자동 분류로 돌아갑니다. 변경 후 Shyni에서 M3U 채널 목록을 새로고침하세요.</p>
       <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>아이콘</th><th>이름</th><th>그룹</th><th>출력 방식</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th></tr></thead><tbody>
-      {% for channel in channels %}<tr>
+      {% for channel in channels %}
+      {% if loop.changed(channel.group_name) %}
+      <tr class="hdhr-channel-group-heading table-active"><th colspan="10" scope="rowgroup">{{ channel.group_name }} <span class="badge badge-secondary ml-2">{{ group_channel_counts[channel.group_name] }}개</span></th></tr>
+      {% endif %}
+      <tr class="hdhr-channel-row" data-group-name="{{ channel.group_name }}">
         <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
         <td>{{ channel.guide_number }}</td>
         <td style="min-width:210px">
@@ -474,6 +478,7 @@
         cell.find('.hdhr-channel-group-name').text(ret.group_name+(ret.manual_group_name ? ' · 수동' : ''));
         cell.closest('tr').find('.hdhr-channel-profile-summary').text('적용: '+ret.effective_output_label);
         if(ret.manual_group_name) $('<option>').val(ret.manual_group_name).appendTo('#hdhr_group_names');
+        if(cell.closest('tr').attr('data-group-name')!==ret.group_name) window.location.reload();
       }
     }).fail(function(){status.text('그룹 저장에 실패했습니다.').addClass('text-danger');
     }).always(function(){button.prop('disabled',false);});
@@ -496,7 +501,7 @@
   $('#hdhr_group_refresh_btn').on('click', function(){
     var button=$(this).prop('disabled',true);
     $('#hdhr_group_result').text('공용 채널 기준표를 불러오고 있습니다…').removeClass('text-danger');
-    $.ajax({url:root+'refresh_channel_groups',type:'POST',dataType:'json',timeout:25000,global:false
+    $.ajax({url:root+'refresh_channel_groups',type:'POST',dataType:'json',timeout:45000,global:false
     }).done(function(ret){
       $('#hdhr_group_result').text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
       if(ret.ret==='success') window.location.reload();

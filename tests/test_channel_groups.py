@@ -89,11 +89,17 @@ class ChannelGroupsTest(unittest.TestCase):
             self.assertEqual(conn.execute('SELECT * FROM hdhomerun_ff_channel').fetchall(),before)
 
     def test_shared_endpoint_is_read_only_and_connection_failure_keeps_cache(self):
-        response=MagicMock()
-        response.__enter__.return_value.read.return_value=json.dumps(payload()).encode()
-        with patch('channel_groups.urllib.request.urlopen',return_value=response) as request:
-            self.assertEqual(fetch_rules(),self.rules)
-            self.assertIn('/api/basic/match_rules?',request.call_args.args[0])
+        responses=[]
+        for value in [payload(), {'tables':{'custom_logo':[{'source_channel_name':'KBS1 HD','stored_filename':'custom.png'}]}}]:
+            response=MagicMock()
+            response.__enter__.return_value.read.return_value=json.dumps(value).encode()
+            responses.append(response)
+        with patch('channel_groups.urllib.request.urlopen',side_effect=responses) as request:
+            result=fetch_rules()
+            self.assertEqual(result['alias_exact'],self.rules['alias_exact'])
+            self.assertIn('_logos',result)
+            self.assertIn('/api/basic/match_rules?',request.call_args_list[0].args[0])
+            self.assertIn('/api/basic/db_dump?',request.call_args_list[1].args[0])
             self.assertEqual(request.call_args.kwargs['timeout'],20)
         self.store.save_group_rules(self.rules)
         with patch('channel_groups.urllib.request.urlopen',side_effect=OSError('offline')):

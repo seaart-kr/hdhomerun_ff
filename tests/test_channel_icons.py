@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from channel_groups import effective_logo, logo_url, parse_rules, GITHUB_ASSETS
+from channel_groups import effective_logo, logo_url, parse_rules, parse_icon_catalog, GITHUB_ASSETS
 from model import ChannelStore
 from playlist import build_shyni_m3u
 
@@ -70,6 +70,35 @@ class ChannelIconsTest(unittest.TestCase):
         self.store.save_group_rules(self.rules(custom_logo_url='/customlogo/custom.png'))
         text=build_shyni_m3u(self.store.playback_channels(),'http://ff.example','hdhomerun_ff')
         self.assertIn('tvg-logo="'+GITHUB_ASSETS+'custom.png"',text)
+
+    def test_separate_catalog_links_custom_icons_to_master_and_aliases(self):
+        catalog={'tables':{
+            'channel_master':[{'id':7,'standard_name':'KBS1','e_aka':'KBS 1|KBS-1 HD'}],
+            'channel_alias':[{'channel_master_id':7,'alias_name':'KBS1 HD'}],
+            'custom_logo':[{'channel_master_id':7,'stored_filename':'custom.png'}],
+            'provider_logo_local':[{'matched_channel_id':7,'provider':'KT','logo_url_template':'/customlogo/kt/basic.png'}],
+        }}
+        rules={'_logos':parse_icon_catalog(catalog)}
+        for name in ['KBS1','KBS 1','KBS-1 HD','KBS1 HD']:
+            with self.subTest(name=name):self.assertEqual(effective_logo(name,'','',rules),GITHUB_ASSETS+'custom.png')
+
+    def test_source_name_only_custom_icon_precedes_provider(self):
+        logos=parse_icon_catalog({'custom_logo':[{'source_channel_name':'KBS1','filename':'custom.png'}],
+                                  'provider_logo_local':[{'standard_name':'KBS1','provider':'KT','stored_filename':'kt/default.png'}]})
+        self.assertEqual(effective_logo('KBS1','','',{'_logos':logos}),GITHUB_ASSETS+'custom.png')
+
+    def test_empty_or_invalid_icon_catalog_preserves_saved_rules(self):
+        self.store.save_group_rules(self.rules(custom_logo_url='/customlogo/old.png'))
+        before=self.store.group_rules()['rules']
+        for payload in [{}, {'ret':'danger'}, {'tables':{'custom_logo':[]}}, {'tables':{'custom_logo':'invalid'}}]:
+            with self.subTest(payload=payload),self.assertRaises(ValueError):parse_icon_catalog(payload)
+        self.assertEqual(self.store.group_rules()['rules'],before)
+
+    def test_provider_priority_and_original_url_fallback(self):
+        rows=[{'standard_name':'KBS1','provider':'WAVVE','original_logo_url':'https://wavve.example/image.png'},
+              {'standard_name':'KBS1','provider':'KT','original_logo_url':'https://kt.example/image.png'}]
+        logos=parse_icon_catalog({'provider_logo_local':rows})
+        self.assertEqual(effective_logo('KBS1','','',{'_logos':logos}),'https://kt.example/image.png')
 
 
 if __name__=='__main__':unittest.main()
