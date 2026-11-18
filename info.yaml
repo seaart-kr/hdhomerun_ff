@@ -1,5 +1,5 @@
 title: "HDHomeRun Live for Shyni"
-version: "0.6.6"
+version: "0.6.7"
 package_name: "hdhomerun_ff"
 developer: "에르퀴아"
 description: "HDHomeRun 직접 채널을 Shyni용 M3U/HLS로 제공"

@@ -50,7 +50,11 @@ TAG_GETSET_VALUE = 0x04
 TAG_ERROR_MESSAGE = 0x05
 TAG_GETSET_LOCKKEY = 0x15
 MAX_FRAME_PAYLOAD = 1452
-MAX_CONTROL_TEXT = 512
+# A cable mux can return more than 512 bytes of UTF-8 channel names. Keep
+# request validation separate from response text; the frame limit above
+# continues to bound every received packet, including its TLV overhead.
+MAX_CONTROL_TEXT = 4096
+MAX_CONTROL_REQUEST_TEXT = 512
 
 
 class HDHomeRunControlError(HDHomeRunError):
@@ -190,7 +194,7 @@ def _decode_frame(data: bytes) -> tuple[int, bytes]:
 
 def _control_text(value: object, field: str) -> str:
     text = str(value or "")
-    if not text or "\x00" in text or len(text) > MAX_CONTROL_TEXT:
+    if not text or "\x00" in text or len(text) > MAX_CONTROL_REQUEST_TEXT:
         raise HDHomeRunValidationError(f"HDHomeRun {field} is invalid")
     return text
 

@@ -1,10 +1,12 @@
+import struct
 import unittest
 
-from hdhomerun import ScanTarget
+from hdhomerun import HDHomeRunValidationError, ScanTarget
 from hdhr_control import (
     HDHomeRunControlClient,
     HDHomeRunControlError,
     HDHomeRunControlProtocolError,
+    MAX_FRAME_PAYLOAD,
     TAG_ERROR_MESSAGE,
     TAG_GETSET_NAME,
     TAG_GETSET_VALUE,
@@ -84,6 +86,76 @@ class ControlCodecTest(unittest.TestCase):
         frame[-1] ^= 0x01
         with self.assertRaises(HDHomeRunControlProtocolError):
             _decode_frame(bytes(frame))
+
+
+    def test_many_channel_streaminfo_survives_fragmented_reply(self):
+        names = [f"한국 케이블 방송 채널 {number:02d}" for number in range(1, 26)]
+        streaminfo = "tsid=0x44\nonid=0x10\n" + "".join(
+            f"{number}: {number}.1 {name}\n"
+            for number, name in enumerate(names, 1)
+        )
+        raw_value = streaminfo.encode("utf-8") + b"\0"
+        self.assertGreater(len(raw_value), 512)
+        self.assertLess(len(raw_value), 1300)
+        reply = _encode_frame(
+            TYPE_GETSET_RPY,
+            _encode_tlv(TAG_GETSET_NAME, b"/tuner0/streaminfo\0")
+            + _encode_tlv(TAG_GETSET_VALUE, raw_value),
+        )
+        fake = FakeSocket(b"", chunks=[reply[i:i + 37] for i in range(0, len(reply), 37)])
+        client = HDHomeRunControlClient(
+            "192.168.2.17", socket_factory=lambda address, timeout: fake,
+        )
+
+        received = client.get("/tuner0/streaminfo")
+        self.assertEqual(received, streaminfo)
+        tsid, onid, services = parse_streaminfo(received)
+        self.assertEqual((tsid, onid), ("0x44", "0x10"))
+        self.assertEqual([service.name for service in services], names)
+        self.assertTrue(fake.closed)
+
+    def test_response_text_can_fill_valid_frame(self):
+        name = _encode_tlv(TAG_GETSET_NAME, b"/tuner0/streaminfo\0")
+        # Long value TLV has a one-byte tag, two-byte length, and trailing NUL.
+        text = "x" * (MAX_FRAME_PAYLOAD - len(name) - 4)
+        payload = name + _encode_tlv(TAG_GETSET_VALUE, text.encode() + b"\0")
+        self.assertEqual(len(payload), MAX_FRAME_PAYLOAD)
+        fake = FakeSocket(_encode_frame(TYPE_GETSET_RPY, payload))
+        client = HDHomeRunControlClient(
+            "192.168.2.17", socket_factory=lambda address, timeout: fake,
+        )
+        self.assertEqual(client.get("/tuner0/streaminfo"), text)
+
+    def test_oversized_reply_frame_is_rejected_before_body_read(self):
+        fake = FakeSocket(struct.pack(">HH", TYPE_GETSET_RPY, MAX_FRAME_PAYLOAD + 1))
+        client = HDHomeRunControlClient(
+            "192.168.2.17", socket_factory=lambda address, timeout: fake,
+        )
+        with self.assertRaises(HDHomeRunControlProtocolError):
+            client.get("/tuner0/streaminfo")
+        self.assertTrue(fake.closed)
+
+    def test_response_with_embedded_nul_is_rejected(self):
+        reply = _encode_frame(
+            TYPE_GETSET_RPY, _encode_tlv(TAG_GETSET_VALUE, b"channel\0other\0"),
+        )
+        client = HDHomeRunControlClient(
+            "192.168.2.17", socket_factory=lambda address, timeout: FakeSocket(reply),
+        )
+        with self.assertRaises(HDHomeRunControlProtocolError):
+            client.get("/tuner0/streaminfo")
+
+    def test_request_text_retains_512_character_limit(self):
+        def unexpected_connection(address, timeout):
+            self.fail("invalid request must be rejected before connecting")
+
+        client = HDHomeRunControlClient(
+            "192.168.2.17", socket_factory=unexpected_connection,
+        )
+        with self.assertRaises(HDHomeRunValidationError):
+            client.get("/" + "x" * 512)
+        with self.assertRaises(HDHomeRunValidationError):
+            client.set("/tuner0/channel", "x" * 513)
 
 
 class StreamInfoTest(unittest.TestCase):
