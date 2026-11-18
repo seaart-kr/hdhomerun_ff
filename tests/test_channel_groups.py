@@ -59,7 +59,7 @@ class ChannelGroupsTest(unittest.TestCase):
     def test_existing_and_future_channels_use_persistent_rules_without_network(self):
         self.store.replace_device_channels('box',[channel('KBS1 HD'),channel('Unknown','unknown')])
         self.store.set_selected('test',False)
-        with patch('channel_groups.urllib.request.urlopen') as network:
+        with patch('channel_groups.urllib.request.build_opener') as network:
             self.assertEqual(self.store.list_channels()[0]['group_name'],'그룹 없음')
             self.store.save_group_rules(self.rules)
             reopened=ChannelStore(self.store.path)
@@ -94,15 +94,19 @@ class ChannelGroupsTest(unittest.TestCase):
             response=MagicMock()
             response.__enter__.return_value.read.return_value=json.dumps(value).encode()
             responses.append(response)
-        with patch('channel_groups.urllib.request.urlopen',side_effect=responses) as request:
+        with patch('channel_groups.urllib.request.build_opener') as opener:
+            request=opener.return_value.open
+            request.side_effect=responses
             result=fetch_rules()
             self.assertEqual(result['alias_exact'],self.rules['alias_exact'])
             self.assertIn('_logos',result)
-            self.assertIn('/api/basic/match_rules?',request.call_args_list[0].args[0])
-            self.assertIn('/api/basic/db_dump?',request.call_args_list[1].args[0])
+            self.assertIn('/normal/catalog?resource=match_rules',request.call_args_list[0].args[0].full_url)
+            self.assertIn('X-catalog-key',request.call_args_list[0].args[0].headers)
+            self.assertNotIn('apikey=',request.call_args_list[0].args[0].full_url)
+            self.assertIn('/normal/catalog?resource=db_dump',request.call_args_list[1].args[0].full_url)
             self.assertEqual(request.call_args.kwargs['timeout'],20)
         self.store.save_group_rules(self.rules)
-        with patch('channel_groups.urllib.request.urlopen',side_effect=OSError('offline')):
+        with patch('channel_groups.urllib.request.build_opener',side_effect=OSError('offline')):
             with self.assertRaises(ValueError):fetch_rules()
         self.assertEqual(self.store.group_rules()['rules'],self.rules)
 

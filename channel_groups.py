@@ -8,9 +8,9 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-RULES_URL = 'https://ff.aha3011.mywire.org/ff_tvh_sheet_write/api/basic/match_rules'
+RULES_URL = 'https://ff.aha3011.mywire.org/tvh_m3u_plugin/normal/catalog'
 # Distributed with tvh_m3u_plugin for read-only access to the shared catalog.
-PUBLIC_READ_APIKEY = 'TLP1TOGA4P'
+PUBLIC_READ_APIKEY = 'catalog_read_v1_QUDdwvPrn0WyGKiXjK-Ns2LwmjDpq30Xg7q9nJ0VSMs'
 BUCKETS = ('master_exact', 'alias_exact', 'master_norm', 'alias_norm')
 DEFAULT_GROUPS = ('', 'HDHomeRun', 'Preset scan (discovery only)', '그룹 없음')
 GROUP_ORDER = (
@@ -102,10 +102,18 @@ def parse_rules(payload):
     return rules
 
 
+class _NoCatalogRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _download_catalog(endpoint, api_key):
-    url = RULES_URL.rsplit('/', 1)[0] + '/' + endpoint + '?' + urllib.parse.urlencode({'apikey': api_key})
+    if endpoint not in {'match_rules', 'db_dump'}:
+        raise ValueError('공용 조회 요청이 아닙니다.')
+    url = RULES_URL + '?' + urllib.parse.urlencode({'resource': endpoint})
+    request = urllib.request.Request(url, headers={'X-Catalog-Key': api_key})
     try:
-        with urllib.request.urlopen(url, timeout=20) as response:
+        with urllib.request.build_opener(_NoCatalogRedirect()).open(request, timeout=20) as response:
             data = response.read(8 * 1024 * 1024 + 1)
         if len(data) > 8 * 1024 * 1024:
             raise ValueError('공용 채널 기준표가 너무 큽니다. 기존 그룹을 유지합니다.')
