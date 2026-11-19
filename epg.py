@@ -59,7 +59,7 @@ def _tag(element):
 
 
 def parse_channels(path):
-    channels, seen, depth, root = [], set(), 0, None
+    channels, seen, depth, root, processed = [], set(), 0, None, 0
     for event, element in ET.iterparse(path, events=('start', 'end')):
         if event == 'start':
             depth += 1
@@ -92,6 +92,11 @@ def parse_channels(path):
                     raise ValueError('EPG 채널 수가 너무 많습니다.')
             element.clear()
             root.clear()
+            processed += 1
+            if processed % 250 == 0:
+                # FF may run cooperative HTTP workers: large XMLTV files
+                # must give playlist/segment requests a chance to run.
+                time.sleep(0)
         depth -= 1
     if not channels:
         raise ValueError('EPG에 이름이 있는 channel 항목이 없습니다.')

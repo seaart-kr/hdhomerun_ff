@@ -31,4 +31,7 @@ setting = {
 }
 
 P = create_plugin_instance(setting)
+P.recent_menu_plugin_except_list = list(getattr(P, 'recent_menu_plugin_except_list', []) or [])
+if 'basic|preview' not in P.recent_menu_plugin_except_list:
+    P.recent_menu_plugin_except_list.append('basic|preview')
 logger = P.logger if getattr(P, 'logger', None) else logging.getLogger(__package__)

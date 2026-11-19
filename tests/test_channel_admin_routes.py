@@ -122,6 +122,14 @@ class AdminRoutesTest(unittest.TestCase):
         self.assertEqual(self.client.get('/menu/preview?i=free').status_code,409)
         self.assertEqual(self.client.get('/api/preview.m3u8?i=free').status_code,409)
 
+    def test_missing_preview_channel_redirects_to_device_and_repairs_recent_menu(self):
+        response=self.client.get('/menu/preview')
+        self.assertEqual(response.status_code,302)
+        self.assertTrue(response.headers['Location'].endswith('/hdhomerun_ff/basic/device'))
+        Settings.set('recent_menu_plugin','basic|preview')
+        self.instance.plugin_load()
+        self.assertEqual(Settings.get('recent_menu_plugin'),'basic|device')
+
     def test_preview_api_can_serve_unselected_channel_without_enabling_it(self):
         playlist='#EXTM3U\n#EXTINF:2,\nsegment_000000001.ts\n'
         with patch.object(self.module.HLSManager,'get_playlist',return_value=playlist):

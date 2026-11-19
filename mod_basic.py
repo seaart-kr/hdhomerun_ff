@@ -8,7 +8,7 @@ from collections import Counter
 from datetime import datetime
 from urllib.parse import urlencode, urlsplit
 
-from flask import Response, jsonify, render_template, request, send_file
+from flask import Response, jsonify, render_template, request, send_file, redirect
 from plugin import PluginModuleBase, ToolUtil
 
 from .diagnostics import ffmpeg_capabilities
@@ -217,6 +217,8 @@ class ModuleBasic(PluginModuleBase):
         """Prepare local state after FF has loaded the plugin settings."""
         try:
             _store().init_db()
+            if P.ModelSetting.get('recent_menu_plugin') == 'basic|preview':
+                P.ModelSetting.set('recent_menu_plugin', 'basic|device')
             if P.ModelSetting.get('basic_startup_buffer_version') != '1':
                 if P.ModelSetting.get('basic_transcode_delay_seconds') == '12':
                     P.ModelSetting.set('basic_transcode_delay_seconds', str(TRANSCODE_DEFAULTS['delay_seconds']))
@@ -305,6 +307,8 @@ class ModuleBasic(PluginModuleBase):
     def process_menu(self, sub, req):
         try:
             if sub == 'preview':
+                if not req.args.get('i'):
+                    return redirect(f'/{P.package_name}/basic/device')
                 if _PRESET_SCAN_RUNNER.status()['running']:
                     return Response('스캔이 끝난 뒤 미리보기를 실행하세요. 진행 중인 스캔은 중단하지 않았습니다.', status=409, mimetype='text/plain')
                 channel = preview_channel(_store(), req.args.get('i'), P.ModelSetting.get('basic_hdhomerun_device_id'))
