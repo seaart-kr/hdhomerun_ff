@@ -18,9 +18,11 @@ from typing import Any, Iterable
 try:
     from .channel_groups import effective_group, effective_logo, logo_url
     from .playlist import validate_profile_override
+    from .channel_management import is_encrypted
 except ImportError:
     from channel_groups import effective_group, effective_logo, logo_url
     from playlist import validate_profile_override
+    from channel_management import is_encrypted
 
 
 def default_db_path() -> str:
@@ -84,6 +86,11 @@ class ChannelStore:
                 connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN manual_group_name TEXT NOT NULL DEFAULT ''")
             if 'output_profile' not in columns:
                 connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN output_profile TEXT NOT NULL DEFAULT ''")
+            if 'name_override' not in columns:
+                connection.execute("ALTER TABLE hdhomerun_ff_channel ADD COLUMN name_override TEXT NOT NULL DEFAULT ''")
+            for column in ('epg_channel_id', 'epg_channel_name'):
+                if column not in columns:
+                    connection.execute(f"ALTER TABLE hdhomerun_ff_channel ADD COLUMN {column} TEXT NOT NULL DEFAULT ''")
             connection.execute('''CREATE TABLE IF NOT EXISTS hdhomerun_ff_device (
                 device_id TEXT PRIMARY KEY, profile TEXT NOT NULL DEFAULT '{}'
             )''')
@@ -269,6 +276,8 @@ class ChannelStore:
         result = []
         for channel in self.list_channels():
             raw = channel['raw_data']
+            if is_encrypted(channel):
+                continue
             if raw.get('source') == 'preset_scan':
                 if not channel['selected'] or set(raw.get('flags', [])) & {'control','no data','encrypted'}:
                     continue
@@ -287,25 +296,35 @@ class ChannelStore:
         with self._connection() as connection:
             rows = connection.execute(
                 f'''SELECT channel_id, device_id, guide_number, name, source_url, logo_url,
-                           video_codec, audio_codec, group_name, manual_group_name, output_profile, enabled, selected, logo_override, raw_data,
+                           video_codec, audio_codec, group_name, manual_group_name, output_profile, enabled, selected, logo_override, name_override, epg_channel_id, epg_channel_name, raw_data,
                            created_time, updated_time
                     FROM hdhomerun_ff_channel {where}
                     ORDER BY CAST(guide_number AS REAL), guide_number, name, channel_id'''
             ).fetchall()
         rules = self.group_rules()['rules']
-        result = []
-        for row in rows:
-            item = dict(row)
-            try:
-                item['raw_data'] = json.loads(item['raw_data'] or '{}')
-            except (TypeError, ValueError):
+        return [self._present_row(row, rules) for row in rows]
+
+    def _present_row(self, row, rules):
+        item = dict(row)
+        try:
+            item['raw_data'] = json.loads(item['raw_data'] or '{}')
+            if not isinstance(item['raw_data'], dict):
                 item['raw_data'] = {}
-            item['enabled'] = bool(item['enabled'])
-            item['selected'] = self._selected(item)
-            item['group_name'] = item['manual_group_name'] or effective_group(item['name'], item['group_name'], rules)
-            item['logo_url'] = effective_logo(item['name'], item['logo_override'], item['logo_url'], rules)
-            result.append(item)
-        return result
+        except (TypeError, ValueError):
+            item['raw_data'] = {}
+        item['enabled'] = bool(item['enabled'])
+        item['broadcast_name'] = item['name']
+        item['name'] = item['name_override'] or item['epg_channel_name'] or item['broadcast_name']
+        item['selected'] = self._selected(item)
+        # Keep a known broadcaster's icon/group after a display-name change;
+        # newly identified services can also use their manual/EPG name.
+        group = effective_group(item['broadcast_name'], item['group_name'], rules)
+        if group in {'', 'HDHomeRun', 'Preset scan (discovery only)', '그룹 없음'}:
+            group = effective_group(item['name'], item['group_name'], rules)
+        item['group_name'] = item['manual_group_name'] or group
+        item['logo_url'] = (effective_logo(item['broadcast_name'], item['logo_override'], item['logo_url'], rules)
+                            or effective_logo(item['name'], item['logo_override'], item['logo_url'], rules))
+        return item
 
     def group_rules(self) -> dict[str, Any]:
         """Read the last successful snapshot; menu and playback never use HTTP."""
@@ -335,6 +354,68 @@ class ChannelStore:
             changed = connection.execute('UPDATE hdhomerun_ff_channel SET logo_override = ?, updated_time = ? WHERE channel_id = ?',
                                          (url, now_str(), str(channel_id or '').strip())).rowcount
         return changed == 1
+
+    def set_name(self, channel_id: str, value: str) -> bool:
+        """Keep a display override separate from the next scan's broadcast name."""
+        value = str(value or '').strip()
+        if len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in value):
+            raise ValueError('채널명은 줄바꿈 없이 256자 이내로 입력하세요. 비우면 연결된 EPG명 또는 방송명을 사용합니다.')
+        self.init_db()
+        with self._connection() as connection:
+            changed = connection.execute('UPDATE hdhomerun_ff_channel SET name_override=?,updated_time=? WHERE channel_id=?',
+                                         (value, now_str(), str(channel_id or '').strip())).rowcount
+        return changed == 1
+
+    def set_epg(self, channel_id: str, epg_id: str, epg_name: str, *, apply_name: bool = False) -> bool:
+        epg_id, epg_name = str(epg_id or '').strip(), str(epg_name or '').strip()
+        if any(len(value) > 256 or any(ord(c) < 32 or ord(c) == 127 for c in value) for value in (epg_id, epg_name)):
+            raise ValueError('EPG 채널 ID·이름 형식을 확인하세요.')
+        if bool(epg_id) != bool(epg_name):
+            raise ValueError('EPG 채널 ID와 이름이 함께 필요합니다.')
+        self.init_db()
+        with self._connection() as connection:
+            changed = connection.execute('''UPDATE hdhomerun_ff_channel SET epg_channel_id=?,epg_channel_name=?,
+                name_override=CASE WHEN ? THEN '' ELSE name_override END,updated_time=? WHERE channel_id=?''',
+                (epg_id, epg_name, int(apply_name), now_str(), str(channel_id or '').strip())).rowcount
+        return changed == 1
+
+    def apply_epg_matches(self, matches: dict[str, dict[str, Any]]) -> int:
+        """Apply exact matches atomically without replacing manual display names."""
+        self.init_db()
+        count = 0
+        with self._connection() as connection:
+            for channel_id, entry in matches.items():
+                count += connection.execute('''UPDATE hdhomerun_ff_channel SET epg_channel_id=?,epg_channel_name=?,updated_time=?
+                    WHERE channel_id=? AND epg_channel_id='' ''',
+                    (entry['id'], entry['name'], now_str(), channel_id)).rowcount
+        return count
+
+    def delete_channel(self, channel_id: str) -> bool:
+        """Remove the saved row only; the next scan may discover it again."""
+        self.init_db()
+        with self._connection() as connection:
+            changed = connection.execute('DELETE FROM hdhomerun_ff_channel WHERE channel_id=?',
+                                         (str(channel_id or '').strip(),)).rowcount
+        return changed == 1
+
+    def delete_encrypted_channels(self, device_id: str) -> int:
+        """Delete only explicitly encrypted rows of the current device."""
+        device_id = str(device_id or '').strip()
+        if not device_id:
+            raise ValueError('먼저 사용할 장비를 확인하세요.')
+        self.init_db()
+        with self._connection() as connection:
+            connection.execute('BEGIN IMMEDIATE')
+            ids = []
+            for row in connection.execute('SELECT channel_id,raw_data FROM hdhomerun_ff_channel WHERE device_id=?', (device_id,)):
+                try:
+                    raw = json.loads(row['raw_data'] or '{}')
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(raw, dict) and is_encrypted({'raw_data': raw}):
+                    ids.append((row['channel_id'],))
+            connection.executemany('DELETE FROM hdhomerun_ff_channel WHERE channel_id=?', ids)
+        return len(ids)
 
     def set_group(self, channel_id: str, value: str) -> bool:
         value = str(value or '').strip()
@@ -394,26 +475,19 @@ class ChannelStore:
         return updated == 1
 
     def get_channel(self, channel_id: str) -> dict[str, Any] | None:
+        """Get a saved row for management; playback uses playback_channel()."""
         channel_id = str(channel_id or '').strip()
         if not channel_id:
             return None
         self.init_db()
         with self._connection() as connection:
             row = connection.execute(
-                'SELECT * FROM hdhomerun_ff_channel WHERE channel_id = ? AND enabled = 1',
+                'SELECT * FROM hdhomerun_ff_channel WHERE channel_id = ?',
                 (channel_id,),
             ).fetchone()
         if row is None:
             return None
-        item = dict(row)
-        try:
-            item['raw_data'] = json.loads(item.get('raw_data') or '{}')
-        except (TypeError, ValueError):
-            item['raw_data'] = {}
-        item['enabled'] = bool(item['enabled'])
-        item['group_name'] = item['manual_group_name'] or effective_group(item['name'], item['group_name'], self.group_rules()['rules'])
-        item['logo_url'] = effective_logo(item['name'], item['logo_override'], item['logo_url'], self.group_rules()['rules'])
-        return item
+        return self._present_row(row, self.group_rules()['rules'])
 
     def set_enabled(self, channel_id: str, enabled: bool) -> bool:
         self.init_db()

@@ -47,11 +47,11 @@ def _m3u_text(value: object) -> str:
     return str(value or '').replace('\r', ' ').replace('\n', ' ').replace('"', "'").strip()
 
 
-def build_shyni_m3u(channels, base_url: str, package_name: str, api_key: str = '', output_profile: str = 'copy', consumer_id: str = '', profile_overrides: dict | None = None) -> str:
+def build_shyni_m3u(channels, base_url: str, package_name: str, api_key: str = '', output_profile: str = 'copy', consumer_id: str = '', profile_overrides: dict | None = None, epg_url: str = '') -> str:
     base_url = str(base_url or '').rstrip('/')
     package_name = str(package_name or '').strip().strip('/')
     profile = normalise_output_profile(output_profile)
-    lines = ['#EXTM3U']
+    lines = ['#EXTM3U' + (f' x-tvg-url="{_m3u_text(epg_url)}"' if epg_url else '')]
     for channel in sorted(channels, key=group_sort_key):
         if not channel.get('enabled', True):
             continue
@@ -59,7 +59,8 @@ def build_shyni_m3u(channels, base_url: str, package_name: str, api_key: str = '
         name = _m3u_text(channel.get('name'))
         if not channel_id or not name:
             continue
-        attrs = [f'tvg-id="{channel_id}"', f'tvg-name="{name}"']
+        epg_id = _m3u_text(channel.get('epg_channel_id') or channel_id)
+        attrs = [f'tvg-id="{epg_id}"', f'tvg-name="{name}"']
         guide_number = _m3u_text(channel.get('guide_number'))
         if guide_number:
             attrs.append(f'tvg-chno="{guide_number}"')

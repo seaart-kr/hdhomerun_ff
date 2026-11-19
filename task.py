@@ -26,10 +26,12 @@ def snapshot_channel_rows(snapshot: DeviceSnapshot) -> list[dict[str, Any]]:
             'video_codec': channel.video_codec,
             'audio_codec': channel.audio_codec,
             'group_name': 'HDHomeRun',
-            'enabled': True,
+            'enabled': not channel.drm and not channel.name_missing,
             'raw_data': {
                 'source': 'native_lineup',
                 'guide_number': channel.guide_number,
+                'name_missing': channel.name_missing,
+                'flags': ['encrypted'] if channel.drm else [],
             },
         })
     return rows

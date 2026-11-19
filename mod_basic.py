@@ -6,9 +6,9 @@ import os
 import re
 from collections import Counter
 from datetime import datetime
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit
 
-from flask import Response, jsonify, render_template, request
+from flask import Response, jsonify, render_template, request, send_file
 from plugin import PluginModuleBase, ToolUtil
 
 from .diagnostics import ffmpeg_capabilities
@@ -27,6 +27,8 @@ from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_
 from .setup import P, logger
 from .task import snapshot_channel_rows
 from .channel_groups import GROUP_ORDER, group_sort_key, fetch_rules as fetch_group_rules
+from .channel_management import is_encrypted, preview_channel, preview_profile
+from .epg import EPGCache, exact_matches as match_epg, validate_url as validate_epg_url
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -173,7 +175,7 @@ def _api_url(path):
         return path
 
 
-def _playlist_with_local_segments(playlist, channel_id, output_profile, api_key, consumer_id):
+def _playlist_with_local_segments(playlist, channel_id, output_profile, api_key, consumer_id, relative=False):
     lines = []
     for raw_line in str(playlist or '').splitlines():
         line = raw_line.strip()
@@ -184,7 +186,8 @@ def _playlist_with_local_segments(playlist, channel_id, output_profile, api_key,
                 query.append(('apikey', api_key))
             if consumer_id:
                 query.append(('client', consumer_id))
-            line = f'{request.host_url.rstrip("/")}/{P.package_name}/api/hls_segment.ts?{urlencode(query)}'
+            origin = '' if relative else request.host_url.rstrip('/')
+            line = f'{origin}/{P.package_name}/api/hls_segment.ts?{urlencode(query)}'
         lines.append(line)
     return '\n'.join(lines) + '\n'
 
@@ -199,6 +202,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_scan_mode': 'auto',
         'basic_hdhomerun_stream_format': 'auto',
         'basic_hdhomerun_playlist_source': 'scan',
+        'basic_epg_url': '',
         'basic_hls_output_profile': 'mobile_cpu',
         'basic_hls_idle_timeout': '60',
         'basic_vaapi_driver': 'auto',
@@ -232,6 +236,8 @@ class ModuleBasic(PluginModuleBase):
     @staticmethod
     def _save_settings(req):
         _transcode_form(req)
+        if 'basic_epg_url' in req.form:
+            validate_epg_url(req.form['basic_epg_url'])
         if 'basic_hls_output_profile' in req.form:
             _playback_form(req)
         if 'basic_vaapi_driver' in req.form:
@@ -250,11 +256,13 @@ class ModuleBasic(PluginModuleBase):
         group_profiles = _store().group_profiles()
         for channel in channels:
             channel['effective_output_profile'] = resolve_output_profile(channel, group_profiles, _output_profile())
+            channel['encrypted'] = is_encrypted(channel)
         settings['basic_hls_output_profile'] = _output_profile()
         settings['basic_hls_idle_timeout'] = str(_as_int(settings.get('basic_hls_idle_timeout'), 60, 30, 600))
         options=_hls_options()['transcode']
         settings.update({'basic_transcode_'+key:str(value) for key,value in options.items()})
         device_info=_store().device_profile(settings.get('basic_hdhomerun_device_id') or '').get('discovery',{})
+        epg = EPGCache().snapshot((settings.get('basic_epg_url') or '').strip())
         if device_info:
             device_info['tuner_limit']=tuner_budget(settings.get('basic_hdhomerun_tuner_limit') or 'all',device_info['tuner_count'])
         return {
@@ -273,6 +281,10 @@ class ModuleBasic(PluginModuleBase):
             'package_name': P.package_name,
             'presets': list_bundled_presets(),
             'channels': channels,
+            'encrypted_channel_count': sum(c['encrypted'] for c in channels),
+            'epg_channels': epg.get('channels', []),
+            'epg_updated_time': epg.get('updated_time', ''),
+            'epg_api_url': _api_url(f'/{P.package_name}/api/epg.xml') if epg else '',
             'group_channel_counts': dict(Counter(c['group_name'] for c in channels)),
             'selected_channel_count': sum(channel['selected'] for channel in channels),
             'learned_mux_count': len(_store().learned_preset(settings.get('basic_hdhomerun_device_id') or '')['muxes']),
@@ -292,6 +304,20 @@ class ModuleBasic(PluginModuleBase):
 
     def process_menu(self, sub, req):
         try:
+            if sub == 'preview':
+                if _PRESET_SCAN_RUNNER.status()['running']:
+                    return Response('스캔이 끝난 뒤 미리보기를 실행하세요. 진행 중인 스캔은 중단하지 않았습니다.', status=409, mimetype='text/plain')
+                channel = preview_channel(_store(), req.args.get('i'), P.ModelSetting.get('basic_hdhomerun_device_id'))
+                path = f'/{P.package_name}/api/preview.m3u8'
+                # Keep media on the page's origin even when FF is behind an
+                # HTTPS reverse proxy and sees an internal HTTP request.
+                query = urlsplit(_api_url(path)).query
+                url = path + ('?' + query if query else '')
+                url += ('&' if '?' in url else '?') + urlencode({'i': channel['channel_id']})
+                return Response(render_template(f'{P.package_name}_preview.html', channel=channel,
+                    package_name=P.package_name, preview_url=url,
+                    epg_channels=EPGCache().snapshot((P.ModelSetting.get('basic_epg_url') or '').strip()).get('channels', [])), mimetype='text/html',
+                    headers={'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer'})
             sub = sub or 'device'
             if sub not in {'device', 'preset', 'playback', 'diagnostics'}:
                 sub = 'device'
@@ -299,12 +325,76 @@ class ModuleBasic(PluginModuleBase):
                 f'{P.package_name}_{self.name}_setting.html',
                 **self._menu_arg(sub),
             )
+        except ValueError as exc:
+            return Response(str(exc), status=400, mimetype='text/plain')
         except Exception as exc:
             logger.exception('[hdhomerun_ff] menu failed: %s', exc)
             return Response(f'HDHomeRun Live for Shyni menu error: {exc}', status=500, mimetype='text/plain')
 
     def process_ajax(self, sub, req):
         try:
+            if sub in {'refresh_epg', 'auto_match_epg', 'set_channel_epg'}:
+                if req.method != 'POST':
+                    return jsonify({'ret': 'warning', 'msg': 'POST 요청이 필요합니다.'}), 405
+                store, cache = _store(), EPGCache()
+                saved_url = (P.ModelSetting.get('basic_epg_url') or '').strip()
+                if sub == 'refresh_epg':
+                    url = validate_epg_url(req.form.get('basic_epg_url', saved_url))
+                    data = cache.refresh(url)
+                    P.ModelSetting.set('basic_epg_url', url)
+                    return jsonify({'ret': 'success', 'count': len(data['channels']),
+                        'msg': f'EPG 채널 {len(data["channels"])}개를 불러왔습니다. 정확히 이름이 일치하는 채널은 자동 연결하고, 나머지는 목록에서 직접 선택하세요.'})
+                data = cache.snapshot(saved_url)
+                identity = str(req.form.get('epg_channel_id') or '').strip()
+                if not data and not (sub == 'set_channel_epg' and not identity):
+                    raise ValueError('먼저 EPG 주소를 저장하고 불러오세요.')
+                device_id = P.ModelSetting.get('basic_hdhomerun_device_id')
+                if sub == 'auto_match_epg':
+                    channels = [c for c in store.list_channels() if c['device_id'] == device_id]
+                    count = store.apply_epg_matches(match_epg(channels, data['channels']))
+                    return jsonify({'ret': 'success', 'matched': count,
+                        'msg': f'이름이 정확히 일치하는 {count}개를 EPG에 연결했습니다. 수동 이름은 유지했습니다. 이름 미수신·중복 후보는 직접 선택하세요.'})
+                channel_id = str(req.form.get('channel_id') or '').strip()
+                channel = store.get_channel(channel_id)
+                if not channel or channel['device_id'] != device_id:
+                    raise ValueError('현재 장비의 채널을 찾지 못했습니다.')
+                entry = next((e for e in data.get('channels', []) if e['id'] == identity), None)
+                if identity and not entry:
+                    raise ValueError('불러온 EPG 목록에서 정확한 채널 ID를 선택하세요.')
+                store.set_epg(channel_id, identity, entry['name'] if entry else '', apply_name=bool(identity))
+                channel = store.get_channel(channel_id)
+                return jsonify({'ret': 'success', 'name': channel['name'], 'name_override': channel['name_override'],
+                    'msg': 'EPG 채널명과 ID를 적용했습니다. Shyni M3U·EPG 목록을 새로고침하세요.' if identity else 'EPG 연결을 해제했습니다.'})
+            if sub in {'set_channel_name', 'delete_channel', 'delete_encrypted_channels'}:
+                if req.method != 'POST':
+                    return jsonify({'ret': 'warning', 'msg': 'POST 요청이 필요합니다.'}), 405
+                store = _store()
+                device_id = P.ModelSetting.get('basic_hdhomerun_device_id')
+                if sub == 'delete_encrypted_channels':
+                    if _PRESET_SCAN_RUNNER.status()['running']:
+                        raise ValueError('스캔 완료 후 삭제하세요. 진행 중인 스캔은 중단하지 않았습니다.')
+                    if not _is_true(req.form.get('confirm')):
+                        raise ValueError('암호화 채널 일괄 삭제 확인이 필요합니다.')
+                    count = store.delete_encrypted_channels(device_id)
+                    return jsonify({'ret': 'success', 'deleted': count,
+                        'msg': f'암호화 채널 {count}개를 삭제했습니다. 제어 서비스·데이터 없음은 유지하며, 재스캔에서 다시 발견되면 등록됩니다.'})
+                channel_id = str(req.form.get('channel_id') or '').strip()
+                channel = store.get_channel(channel_id)
+                if not channel or channel['device_id'] != device_id:
+                    raise ValueError('현재 장비의 채널을 찾지 못했습니다.')
+                if sub == 'set_channel_name':
+                    store.set_name(channel_id, req.form.get('name') or '')
+                    channel = store.get_channel(channel_id)
+                    return jsonify({'ret': 'success', 'name': channel['name'],
+                        'name_override': channel['name_override'], 'broadcast_name': channel['broadcast_name'],
+                        'msg': '채널명을 저장했습니다. Shyni의 M3U 채널 목록도 새로고침하세요.'})
+                if _PRESET_SCAN_RUNNER.status()['running']:
+                    raise ValueError('스캔 완료 후 삭제하세요. 진행 중인 스캔은 중단하지 않았습니다.')
+                if not _is_true(req.form.get('confirm')):
+                    raise ValueError('채널 삭제 확인이 필요합니다.')
+                deleted = store.delete_channel(channel_id)
+                return jsonify({'ret': 'success' if deleted else 'warning', 'deleted': int(deleted),
+                    'msg': '현재 목록에서 삭제했습니다. 다음 스캔·라인업 갱신에서 다시 발견되면 등록됩니다.'})
             if sub == 'set_channel_profile':
                 channel_id = str(req.form.get('channel_id') or '').strip()
                 if not channel_id:
@@ -548,6 +638,18 @@ class ModuleBasic(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
+            if sub == 'epg.xml':
+                url = (P.ModelSetting.get('basic_epg_url') or '').strip()
+                if not url:
+                    return Response('EPG 주소를 먼저 설정하세요.', status=404, mimetype='text/plain')
+                cache = EPGCache()
+                data = cache.for_playback(url)
+                response = send_file(cache.file_path(data), mimetype='application/xml', download_name='hdhomerun-epg.xml', as_attachment=True, conditional=False)
+                response.headers['Cache-Control'] = 'no-store'
+                response.headers['X-Content-Type-Options'] = 'nosniff'
+                response.headers['Content-Security-Policy'] = "default-src 'none'; sandbox"
+                response.headers['Referrer-Policy'] = 'no-referrer'
+                return response
             if sub == 'scan_preset.json':
                 preset = _store().learned_preset(P.ModelSetting.get('basic_hdhomerun_device_id') or '')
                 if not preset['muxes']:
@@ -581,6 +683,8 @@ class ModuleBasic(PluginModuleBase):
                     output_profile=profile,
                     consumer_id=_consumer_id(req),
                     profile_overrides=overrides,
+                    epg_url=(request.host_url.rstrip('/') + f'/{P.package_name}/api/epg.xml?' + urlencode({'apikey': str(req.args.get('apikey') or '')}))
+                        if EPGCache().snapshot((P.ModelSetting.get('basic_epg_url') or '').strip()) else '',
                 )
                 return Response(
                     text,
@@ -591,11 +695,17 @@ class ModuleBasic(PluginModuleBase):
                     },
                 )
 
-            if sub == 'hls.m3u8':
+            if sub in {'hls.m3u8', 'preview.m3u8'}:
                 channel_id = str(req.args.get('i') or '').strip()
-                profile = normalise_output_profile(req.args.get('p') or _output_profile())
+                if sub == 'preview.m3u8':
+                    if _PRESET_SCAN_RUNNER.status()['running']:
+                        return Response('스캔 완료 후 미리보기하세요.', status=409, mimetype='text/plain')
+                    channel = preview_channel(_store(), channel_id, P.ModelSetting.get('basic_hdhomerun_device_id'))
+                    profile = preview_profile(channel, _store().group_profiles(), _output_profile())
+                else:
+                    channel = next((c for c in _playlist_channels() if c['channel_id'] == channel_id), None)
+                    profile = normalise_output_profile(req.args.get('p') or _output_profile())
                 consumer_id = _consumer_id(req)
-                channel = next((c for c in _playlist_channels() if c['channel_id'] == channel_id), None)
                 if not channel:
                     return Response('channel not found', status=404, mimetype='text/plain')
                 _hls_options()
@@ -626,6 +736,7 @@ class ModuleBasic(PluginModuleBase):
                         profile,
                         str(req.args.get('apikey') or '').strip(),
                         consumer_id,
+                        relative=sub == 'preview.m3u8',
                     ),
                     mimetype='application/vnd.apple.mpegurl',
                     headers={'Cache-Control': 'no-store, no-cache, must-revalidate', 'X-Accel-Buffering': 'no',

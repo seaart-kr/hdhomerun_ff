@@ -62,6 +62,8 @@ class LineupChannel:
     stream_url: str
     video_codec: str = ""
     audio_codec: str = ""
+    drm: bool = False
+    name_missing: bool = False
 
 
 @dataclass(frozen=True)
@@ -332,8 +334,11 @@ class HDHomeRunClient:
             try:
                 guide_number = _safe_text(item.get("GuideNumber"), 64)
                 guide_name = _safe_text(item.get("GuideName"), 256)
-                if not guide_number or not guide_name:
-                    raise HDHomeRunValidationError("채널 번호 또는 이름이 없습니다.")
+                if not guide_number:
+                    raise HDHomeRunValidationError("채널 번호가 없습니다.")
+                name_missing = not guide_name or guide_name.lower() in {'0', 'unknown'}
+                if name_missing:
+                    guide_name = f'채널 {guide_number}'
                 stream_url = _stream_url_for_origin(item.get("URL"), self.base_url)
                 channel_id = stable_channel_id(device_id, guide_number, stream_url)
                 if channel_id in seen:
@@ -347,6 +352,8 @@ class HDHomeRunClient:
                         stream_url=stream_url,
                         video_codec=_safe_text(item.get("VideoCodec"), 64).lower(),
                         audio_codec=_safe_text(item.get("AudioCodec"), 64).lower(),
+                        drm=str(item.get('DRM') or '').strip().lower() in {'1', 'true', 'yes'},
+                        name_missing=name_missing,
                     )
                 )
             except HDHomeRunValidationError:

@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="ko"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="referrer" content="no-referrer"><title>{{ channel.name }} · 채널 확인</title>
+<style>
+body{margin:0;background:#15191f;color:#eef2f7;font:15px/1.5 system-ui,sans-serif}main{max-width:1000px;margin:auto;padding:20px}h1{font-size:22px;margin:0 0 8px}video{display:block;width:100%;max-height:62vh;background:#000;border-radius:8px}button,input,select{font:inherit;padding:9px 12px;border-radius:5px;border:1px solid #667085}button{cursor:pointer;background:#2764b6;color:white}button:disabled{opacity:.5;cursor:wait}input,select{max-width:100%;box-sizing:border-box;background:#fff;color:#182230}.row{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}.row input{flex:1;min-width:160px}.muted{color:#b7c2d0}.status{min-height:24px;margin:10px 0}.error{color:#ffb3b3}section{padding-top:12px}small{font-size:13px}
+</style></head><body><main>
+<h1 id="channel_title">{{ channel.name }}</h1>
+<p class="muted">{{ channel.guide_number }} · {{ '장비 제공 라인업' if channel.raw_data.get('source') == 'native_lineup' else '직접 스캔 채널' }}</p>
+<video id="player" controls playsinline preload="none"></video>
+<div class="row"><button id="play_btn" type="button">재생 시작 / 다시 시도</button><button id="stop_btn" type="button">재생 중지</button></div>
+<div id="play_status" class="status" role="status" aria-live="polite">재생을 눌러 채널을 확인하세요. 준비에 수십 초가 걸릴 수 있습니다.</div>
+<p class="muted"><small>소리만 들리면 라디오·음성 전용 방송일 수 있습니다. 브라우저 호환 변환을 사용하며 유휴 튜너가 필요합니다. 이 창에서 재생해도 채널의 사용 체크나 Shyni 목록은 자동 변경하지 않습니다. 창을 닫거나 중지하면 사용하지 않는 스트림은 잠시 후 정리됩니다.</small></p>
+{% if channel.raw_data.get('flags') %}<p class="muted">장비 상태: {% for flag in channel.raw_data.flags %}{{ {'control':'제어 서비스', 'no data':'데이터 없음'}.get(flag, flag) }}{% if not loop.last %} · {% endif %}{% endfor %}. 일반 방송 데이터가 없어 재생되지 않을 수 있습니다.</p>{% endif %}
+<section><h2 style="font-size:18px">확인한 채널명 저장</h2>
+<p class="muted"><small>장비 수신 이름: {{ channel.broadcast_name }}. 수동 이름을 비우면 연결된 EPG명 또는 수신 이름을 사용합니다.</small></p>
+<form id="name_form"><div class="row"><input id="channel_name" maxlength="256" value="{{ channel.name_override }}" placeholder="확인한 채널명 입력" aria-label="확인한 채널명"><button id="name_save" type="submit">이름 저장</button></div></form>
+<div id="name_status" class="status" role="status" aria-live="polite"></div>
+<small class="muted">저장 후 장비 / 채널 화면과 Shyni M3U 목록을 새로고침하세요.</small>
+{% if epg_channels %}<h2 style="font-size:18px">확인한 채널을 EPG에 연결</h2>
+<datalist id="epg_choices">{% for entry in epg_channels %}<option value="{{ entry.id }}" label="{{ entry.name }}">{{ entry.name }}</option>{% endfor %}</datalist>
+<form id="epg_form"><div class="row"><input id="epg_id" list="epg_choices" value="{{ channel.epg_channel_id }}" maxlength="256" placeholder="EPG 채널명·ID 검색 후 선택" aria-label="EPG 채널 선택"><button id="epg_save" type="submit">EPG 연결·이름 적용</button></div></form>
+<div id="epg_status" class="status" role="status" aria-live="polite"></div>
+<small class="muted">선택한 EPG의 이름과 ID를 적용합니다. 이후 직접 이름을 저장하면 수동 이름을 우선합니다. 비워 저장하면 EPG 연결만 해제합니다.</small>
+{% endif %}
+</section>
+</main><script src="/{{ package_name }}/static/vendor/hls.light.min.js?v=1.6.13"></script>
+<script>
+(function(){
+  'use strict';
+  var source={{ preview_url|tojson }},id={{ channel.channel_id|tojson }},root={{ ('/'+package_name+'/ajax/basic/')|tojson }};
+  var video=document.getElementById('player'),status=document.getElementById('play_status'),hls=null;
+  function stop(){if(hls){hls.destroy();hls=null;}video.pause();video.removeAttribute('src');video.load();}
+  function message(text,error){status.textContent=text;status.classList.toggle('error',!!error);}
+  document.getElementById('play_btn').addEventListener('click',function(){
+    stop();message('채널을 준비하고 있습니다. 잠시 기다려 주세요.');
+    if(window.Hls && Hls.isSupported()){
+      hls=new Hls({manifestLoadingTimeOut:60000,levelLoadingTimeOut:60000,fragLoadingTimeOut:30000,manifestLoadingMaxRetry:1,enableWorker:true});
+      hls.loadSource(source);hls.attachMedia(video);
+      hls.on(Hls.Events.MANIFEST_PARSED,function(){video.play().catch(function(){message('영상의 재생 버튼을 눌러 주세요.');});});
+      hls.on(Hls.Events.ERROR,function(event,data){if(data.fatal){message('재생하지 못했습니다. 스캔 완료·유휴 튜너·방송 데이터 상태를 확인한 뒤 다시 시도하세요.',true);if(hls){hls.destroy();hls=null;}}});
+      // Keep the user gesture for browsers that block unmuted playback.
+      video.play().catch(function(){});
+    }else if(video.canPlayType('application/vnd.apple.mpegurl')){
+      video.src=source;video.play().catch(function(){message('영상의 재생 버튼을 눌러 주세요.');});
+    }else{message('이 브라우저에서 HLS 재생을 지원하지 않습니다. 최신 Chrome·Edge·Safari를 사용하세요.',true);}
+  });
+  video.addEventListener('playing',function(){message('재생 중 · 화면이나 소리로 채널을 확인한 뒤 이름을 저장하세요.');});
+  video.addEventListener('error',function(){message('방송 데이터를 재생하지 못했습니다. 다른 채널 또는 다시 시도를 선택하세요.',true);});
+  document.getElementById('stop_btn').addEventListener('click',function(){stop();message('재생을 중지했습니다.');});
+  window.addEventListener('pagehide',stop);
+  document.getElementById('name_form').addEventListener('submit',function(event){
+    event.preventDefault();var button=document.getElementById('name_save'),output=document.getElementById('name_status');button.disabled=true;output.textContent='저장 중…';
+    var form=new URLSearchParams();form.set('channel_id',id);form.set('name',document.getElementById('channel_name').value);
+    fetch(root+'set_channel_name',{method:'POST',credentials:'same-origin',body:form}).then(function(response){return response.json();}).then(function(ret){
+      output.textContent=ret.msg || '처리했습니다.';output.classList.toggle('error',ret.ret!=='success');
+      if(ret.ret==='success'){document.getElementById('channel_title').textContent=ret.name;document.title=ret.name+' · 채널 확인';document.getElementById('channel_name').value=ret.name_override || '';}
+    }).catch(function(){output.textContent='저장하지 못했습니다. FF 로그인 상태를 확인하세요.';output.classList.add('error');}).finally(function(){button.disabled=false;});
+  });
+  var epgForm=document.getElementById('epg_form');
+  if(epgForm)epgForm.addEventListener('submit',function(event){
+    event.preventDefault();var button=document.getElementById('epg_save'),output=document.getElementById('epg_status');button.disabled=true;output.textContent='저장 중…';
+    var form=new URLSearchParams();form.set('channel_id',id);form.set('epg_channel_id',document.getElementById('epg_id').value);
+    fetch(root+'set_channel_epg',{method:'POST',credentials:'same-origin',body:form}).then(function(response){return response.json();}).then(function(ret){
+      output.textContent=ret.msg || '처리했습니다.';output.classList.toggle('error',ret.ret!=='success');
+      if(ret.ret==='success'){document.getElementById('channel_title').textContent=ret.name;document.title=ret.name+' · 채널 확인';document.getElementById('channel_name').value=ret.name_override || '';}
+    }).catch(function(){output.textContent='EPG 연결을 저장하지 못했습니다.';output.classList.add('error');}).finally(function(){button.disabled=false;});
+  });
+})();
+</script></body></html>

@@ -92,6 +92,23 @@ class ClientTest(unittest.TestCase):
             stable_channel_id("1234ABCD", "7", url),
         )
 
+    def test_unnamed_native_channels_are_kept_for_preview_and_drm_is_explicit(self):
+        from task import snapshot_channel_rows
+        client, transport = self.make_client()
+        transport.responses['http://192.168.1.20/lineup.json'] = [
+            {'GuideNumber':'1','URL':'http://192.168.1.20:5004/auto/v1'},
+            {'GuideNumber':'2','GuideName':'0','URL':'http://192.168.1.20:5004/auto/v2','DRM':'0'},
+            {'GuideNumber':'3','GuideName':'Encrypted','URL':'http://192.168.1.20:5004/auto/v3','DRM':1},
+        ]
+        snapshot = client.fetch_snapshot()
+        self.assertEqual(len(snapshot.lineup.channels), 3)
+        self.assertEqual(snapshot.lineup.channels[0].guide_name, '채널 1')
+        self.assertTrue(snapshot.lineup.channels[0].name_missing)
+        rows = snapshot_channel_rows(snapshot)
+        self.assertEqual(rows[1]['raw_data']['flags'], [])
+        self.assertEqual(rows[2]['raw_data']['flags'], ['encrypted'])
+        self.assertFalse(rows[2]['enabled'])
+
 
 class ScanPlanTest(unittest.TestCase):
     def test_plan_is_pure_and_deduplicates_muxes(self):
