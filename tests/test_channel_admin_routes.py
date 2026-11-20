@@ -8,6 +8,7 @@ import sys
 import tempfile
 import types
 import unittest
+import xml.etree.ElementTree as ET
 from unittest.mock import patch
 
 from flask import Flask, request
@@ -71,11 +72,11 @@ class AdminRoutesTest(unittest.TestCase):
     def tearDown(self):
         self.env.stop();self.temp.cleanup()
 
-    def seed_epg(self):
+    def seed_epg(self, body=b'<tv><channel id="radio.example"><display-name>Radio Name</display-name></channel></tv>'):
         url='https://epg.example.test/xml?apikey=test-source-secret'
         Settings.set('basic_epg_url',url)
         class Source:
-            def open(self,req,timeout):return io.BytesIO(b'<tv><channel id="radio.example"><display-name>Radio Name</display-name></channel></tv>')
+            def open(self,req,timeout):return io.BytesIO(body)
         return self.module.EPGCache().refresh(url,Source())
 
     def test_names_and_delete_require_post_confirmation_and_current_device(self):
@@ -110,7 +111,8 @@ class AdminRoutesTest(unittest.TestCase):
             proxied=self.client.get('/menu/preview?i=free').get_data(as_text=True)
         self.assertNotIn('http://internal:9999',proxied)
         self.assertEqual(response.headers['Cache-Control'],'no-store')
-        self.assertEqual(self.client.get('/hdhomerun_ff/static/vendor/hls.light.min.js').status_code,200)
+        with self.client.get('/hdhomerun_ff/static/vendor/hls.light.min.js') as bundle:
+            self.assertEqual(bundle.status_code,200)
         device=self.client.get('/menu/device')
         self.assertEqual(device.status_code,200)
         self.assertIn('암호화 채널만 일괄 삭제',device.get_data(as_text=True))
@@ -150,12 +152,71 @@ class AdminRoutesTest(unittest.TestCase):
         response=self.client.get('/api/m3u_shyni?apikey=test-only-key')
         text=response.get_data(as_text=True)
         self.assertIn('tvg-id="radio.example"',text)
-        self.assertIn('x-tvg-url=',text)
+        self.assertIn('x-tvg-url="http://localhost/hdhomerun_ff/api/epg_shyni.xml?apikey=test-only-key"',text)
         self.assertNotIn('test-source-secret',text)
-        epg=self.client.get('/api/epg.xml')
-        self.assertEqual(epg.status_code,200)
-        self.assertIn('attachment',epg.headers['Content-Disposition'])
-        self.assertEqual(epg.headers['X-Content-Type-Options'],'nosniff')
+        with self.client.get('/api/epg.xml') as epg:
+            self.assertEqual(epg.status_code,200)
+            self.assertIn('attachment',epg.headers['Content-Disposition'])
+            self.assertEqual(epg.headers['X-Content-Type-Options'],'nosniff')
         Settings.set('basic_epg_url','')
         cleared=self.client.post('/ajax/set_channel_epg',data={'channel_id':'free','epg_channel_id':''}).get_json()
         self.assertEqual(cleared['ret'],'success')
+
+    def test_shyni_epg_uses_only_current_playlist_matches_and_keeps_program_details(self):
+        guide = b'''<tv xmlns="urn:xmltv" source-info-url="https://epg.example.test/?apikey=test-source-secret">
+          <channel id="radio&amp;local"><display-name lang="ko">Radio</display-name></channel>
+          <channel id="unused"><display-name>Unused</display-name></channel>
+          <channel id="lineup"><display-name>Lineup</display-name></channel>
+          <channel id="other"><display-name>Other</display-name></channel>
+          <programme channel="radio&amp;local" start="20261119090000 +0900" stop="20261119100000 +0900">
+            <title lang="ko">Morning &amp; Music</title><desc>Daily show</desc><episode-num system="onscreen">1</episode-num>
+          </programme>
+          <programme channel="unused"/><programme channel="lineup"/>
+          <programme channel="other"/><programme channel="stale"/>
+        </tv>'''
+        self.seed_epg(guide)
+        self.store.replace_preset_scan_channels('box', [*self.rows,
+            dict(self.rows[0], channel_id='unused'), dict(self.rows[0], channel_id='stale')])
+        self.store.replace_preset_scan_channels('other', [dict(self.rows[0], channel_id='other', device_id='other')])
+        self.store.replace_device_channels('box', [dict(channel_id='lineup', device_id='box',
+            name='Lineup', source_url='http://192.168.2.8/auto/v1', enabled=True,
+            raw_data={'source': 'native_lineup'})], source_scope='native_lineup')
+        for channel, identity, selected in [('free', 'radio&local', True), ('unused', 'unused', False),
+                                            ('stale', 'stale', True), ('other', 'other', True),
+                                            ('lineup', 'lineup', True)]:
+            self.assertTrue(self.store.set_epg(channel, identity, 'EPG name'))
+            self.store.set_selected(channel, selected)
+
+        with self.client.get('/api/epg_shyni.xml?apikey=test-only-key', buffered=True) as response:
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.mimetype, 'application/xml')
+            self.assertEqual(response.headers['Cache-Control'], 'no-store')
+            xml = response.get_data()
+        self.assertNotIn(b'test-source-secret', xml)
+        root = ET.fromstring(xml)
+        self.assertEqual([e.get('id') for e in root.findall('channel')], ['radio&local'])
+        self.assertEqual([e.get('channel') for e in root.findall('programme')], ['radio&local'])
+        programme = root.find('programme')
+        self.assertEqual(programme.get('start'), '20261119090000 +0900')
+        self.assertEqual(programme.get('stop'), '20261119100000 +0900')
+        self.assertEqual(programme.findtext('title'), 'Morning & Music')
+        self.assertEqual(programme.find('title').get('lang'), 'ko')
+        self.assertEqual(programme.findtext('episode-num'), '1')
+        self.assertIn('tvg-id="radio&local"', self.client.get('/api/m3u_shyni').get_data(as_text=True))
+
+        with self.client.get('/api/epg.xml', buffered=True) as response:
+            self.assertEqual(response.get_data(), guide)
+        Settings.set('basic_hdhomerun_playlist_source', 'lineup')
+        with self.client.get('/api/epg_shyni.xml', buffered=True) as response:
+            self.assertEqual([e.get('id') for e in ET.fromstring(response.data).findall('channel')], ['lineup'])
+        self.store.set_selected('lineup', False)
+        with self.client.get('/api/epg_shyni.xml', buffered=True) as response:
+            self.assertEqual(list(ET.fromstring(response.data)), [])
+
+    def test_playback_menu_exposes_filtered_epg_copy_and_missing_source_returns_404(self):
+        self.assertEqual(self.client.get('/api/epg_shyni.xml').status_code, 404)
+        self.seed_epg()
+        response = self.client.get('/menu/playback')
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('/hdhomerun_ff/api/epg_shyni.xml?apikey=test-only-key', response.text)
+        self.assertIn('id="hdhr_epg_copy_url"', response.text)

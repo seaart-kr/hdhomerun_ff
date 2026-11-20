@@ -58,9 +58,9 @@ def _tag(element):
     return element.tag.rsplit('}', 1)[-1]
 
 
-def parse_channels(path):
-    channels, seen, depth, root, processed = [], set(), 0, None, 0
-    for event, element in ET.iterparse(path, events=('start', 'end')):
+def _xmltv_entries(source):
+    depth, root, processed = 0, None, 0
+    for event, element in ET.iterparse(source, events=('start', 'end')):
         if event == 'start':
             depth += 1
             if root is None:
@@ -69,38 +69,68 @@ def parse_channels(path):
                     raise ValueError('XMLTV tv 문서가 아닙니다.')
             continue
         if depth == 2:
-            if _tag(element) == 'channel':
-                raw_identity = str(element.get('id') or '')
-                identity = raw_identity.strip()
-                if not identity or identity != raw_identity or len(identity) > 256 or '"' in identity or any(ord(c) < 32 or ord(c) == 127 for c in identity):
-                    raise ValueError('EPG 채널 ID 형식을 확인하세요.')
-                if identity in seen:
-                    raise ValueError('EPG 채널 ID가 중복됩니다.')
-                seen.add(identity)
-                names, korean = [], []
-                for child in element:
-                    if _tag(child) != 'display-name':
-                        continue
-                    name = _clean_name(''.join(child.itertext()))
-                    if name and name not in names:
-                        names.append(name)
-                    if name and str(child.get('lang') or '').lower() in {'ko', 'kor', 'kr'}:
-                        korean.append(name)
-                if names:
-                    channels.append({'id': identity, 'name': (korean or names)[0], 'names': names})
-                if len(seen) > 10000:
-                    raise ValueError('EPG 채널 수가 너무 많습니다.')
+            yield element
             element.clear()
-            root.clear()
+            root.remove(element)
             processed += 1
             if processed % 250 == 0:
                 # FF may run cooperative HTTP workers: large XMLTV files
                 # must give playlist/segment requests a chance to run.
                 time.sleep(0)
         depth -= 1
+
+
+def parse_channels(path):
+    channels, seen = [], set()
+    for element in _xmltv_entries(path):
+        if _tag(element) != 'channel':
+            continue
+        raw_identity = str(element.get('id') or '')
+        identity = raw_identity.strip()
+        if not identity or identity != raw_identity or len(identity) > 256 or '"' in identity or any(ord(c) < 32 or ord(c) == 127 for c in identity):
+            raise ValueError('EPG 채널 ID 형식을 확인하세요.')
+        if identity in seen:
+            raise ValueError('EPG 채널 ID가 중복됩니다.')
+        seen.add(identity)
+        if len(seen) > 10000:
+            raise ValueError('EPG 채널 수가 너무 많습니다.')
+        names, korean = [], []
+        for child in element:
+            if _tag(child) != 'display-name':
+                continue
+            name = _clean_name(''.join(child.itertext()))
+            if name and name not in names:
+                names.append(name)
+            if name and str(child.get('lang') or '').lower() in {'ko', 'kor', 'kr'}:
+                korean.append(name)
+        if names:
+            channels.append({'id': identity, 'name': (korean or names)[0], 'names': names})
     if not channels:
         raise ValueError('EPG에 이름이 있는 channel 항목이 없습니다.')
     return channels
+
+
+def filtered_xmltv(source, channel_ids):
+    """Stream XMLTV channel definitions and schedules from a validated cache file."""
+    chunk = bytearray(b'<?xml version="1.0" encoding="UTF-8"?>\n<tv>\n')
+    if channel_ids:
+        for element in _xmltv_entries(source):
+            identity_attribute = {'channel': 'id', 'programme': 'channel'}.get(_tag(element))
+            if not identity_attribute or element.get(identity_attribute) not in channel_ids:
+                continue
+            namespace, brace, _ = element.tag.rpartition('}')
+            if brace:
+                prefix = namespace + brace
+                for child in element.iter():
+                    if child.tag.startswith(prefix):
+                        child.tag = child.tag[len(prefix):]
+            element.tail = '\n'
+            chunk.extend(ET.tostring(element, encoding='utf-8'))
+            if len(chunk) >= 65536:
+                yield bytes(chunk)
+                chunk.clear()
+    chunk.extend(b'</tv>\n')
+    yield bytes(chunk)
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):

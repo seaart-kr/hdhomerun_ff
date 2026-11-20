@@ -28,11 +28,12 @@ from .setup import P, logger
 from .task import snapshot_channel_rows
 from .channel_groups import GROUP_ORDER, group_sort_key, fetch_rules as fetch_group_rules
 from .channel_management import is_encrypted, preview_channel, preview_profile
-from .epg import EPGCache, exact_matches as match_epg, validate_url as validate_epg_url
+from .epg import EPGCache, exact_matches as match_epg, filtered_xmltv, validate_url as validate_epg_url
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
 _PRESET_SCAN_RUNNER = PresetScanRunner()
+_SHYNI_EPG_ENDPOINT = 'epg_shyni.xml'
 
 
 def _as_int(value, fallback, minimum, maximum):
@@ -286,7 +287,7 @@ class ModuleBasic(PluginModuleBase):
             'encrypted_channel_count': sum(c['encrypted'] for c in channels),
             'epg_channels': epg.get('channels', []),
             'epg_updated_time': epg.get('updated_time', ''),
-            'epg_api_url': _api_url(f'/{P.package_name}/api/epg.xml') if epg else '',
+            'epg_api_url': _api_url(f'/{P.package_name}/api/{_SHYNI_EPG_ENDPOINT}') if epg else '',
             'group_channel_counts': dict(Counter(c['group_name'] for c in channels)),
             'selected_channel_count': sum(channel['selected'] for channel in channels),
             'learned_mux_count': len(_store().learned_preset(settings.get('basic_hdhomerun_device_id') or '')['muxes']),
@@ -642,13 +643,22 @@ class ModuleBasic(PluginModuleBase):
 
     def process_api(self, sub, req):
         try:
-            if sub == 'epg.xml':
+            if sub in {'epg.xml', _SHYNI_EPG_ENDPOINT}:
                 url = (P.ModelSetting.get('basic_epg_url') or '').strip()
                 if not url:
                     return Response('EPG 주소를 먼저 설정하세요.', status=404, mimetype='text/plain')
                 cache = EPGCache()
                 data = cache.for_playback(url)
-                response = send_file(cache.file_path(data), mimetype='application/xml', download_name='hdhomerun-epg.xml', as_attachment=True, conditional=False)
+                if sub == _SHYNI_EPG_ENDPOINT:
+                    mapped_ids = {channel.get('epg_channel_id') for channel in _playlist_channels()}
+                    channel_ids = {entry['id'] for entry in data['channels'] if entry['id'] in mapped_ids}
+                    source = cache.file_path(data).open('rb') if channel_ids else None
+                    response = Response(filtered_xmltv(source, channel_ids), mimetype='application/xml',
+                                        headers={'Content-Disposition': 'attachment; filename=hdhomerun-shyni-epg.xml'})
+                    if source is not None:
+                        response.call_on_close(source.close)
+                else:
+                    response = send_file(cache.file_path(data), mimetype='application/xml', download_name='hdhomerun-epg.xml', as_attachment=True, conditional=False)
                 response.headers['Cache-Control'] = 'no-store'
                 response.headers['X-Content-Type-Options'] = 'nosniff'
                 response.headers['Content-Security-Policy'] = "default-src 'none'; sandbox"
@@ -687,7 +697,7 @@ class ModuleBasic(PluginModuleBase):
                     output_profile=profile,
                     consumer_id=_consumer_id(req),
                     profile_overrides=overrides,
-                    epg_url=(request.host_url.rstrip('/') + f'/{P.package_name}/api/epg.xml?' + urlencode({'apikey': str(req.args.get('apikey') or '')}))
+                    epg_url=(request.host_url.rstrip('/') + f'/{P.package_name}/api/{_SHYNI_EPG_ENDPOINT}?' + urlencode({'apikey': str(req.args.get('apikey') or '')}))
                         if EPGCache().snapshot((P.ModelSetting.get('basic_epg_url') or '').strip()) else '',
                 )
                 return Response(

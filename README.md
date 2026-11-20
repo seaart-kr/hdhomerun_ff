@@ -2,6 +2,12 @@
 
 FF(FlaskFarm)에서 HDHomeRun 채널을 직접 읽고, Shyni 라이브 TV에 넣을 M3U/HLS 주소를 제공하는 플러그인입니다.
 
+## 0.7.2 · 샤이니용 XMLTV EPG API
+
+**장비 / 채널**에서 MyEPG의 XMLTV 주소를 불러온 뒤 사용할 채널의 EPG를 연결하세요. **재생 / API → Shyni XMLTV EPG → 주소 복사**에서 받은 주소를 Shyni 라이브 TV의 XMLTV EPG에 등록하고 채널 목록과 편성표를 새로고침하면 됩니다.
+
+`/hdhomerun_ff/api/epg_shyni.xml`은 현재 M3U에 포함되고 EPG가 연결된 채널의 편성표를 제공합니다. XMLTV의 채널 ID는 M3U의 `tvg-id`와 일치하며, M3U에도 이 EPG 주소가 들어갑니다. 예전에 `/hdhomerun_ff/api/epg.xml`을 직접 등록했다면 위의 새 주소로 바꾸세요.
+
 ## 0.7.1 · 미리보기 메뉴 복귀 및 EPG 처리 보완
 
 미리보기 창을 최근 메뉴로 저장하지 않아 다음에 플러그인을 열었을 때 빈 미리보기로 이동하지 않습니다. 채널 없는 미리보기 주소는 장비 / 채널로 돌아갑니다. 큰 EPG를 읽을 때 다른 웹 요청에도 실행 기회를 주도록 보완했습니다.

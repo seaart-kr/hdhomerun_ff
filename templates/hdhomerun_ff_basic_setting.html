@@ -224,8 +224,14 @@
         <button type="button" class="btn btn-primary" id="hdhr_save_btn">설정 저장</button>
         <hr>
         <div><strong>Shyni 기본 M3U:</strong> <code>{{ m3u_default_url }}</code></div>
-        {% if epg_api_url %}<div class="mt-2"><strong>Shyni XMLTV EPG:</strong> <code>{{ epg_api_url }}</code></div>
-        <small class="form-text text-muted">EPG를 연결한 채널은 XMLTV ID를 M3U의 tvg-id로 제공합니다. Shyni에 위 EPG 주소도 등록하세요. EPG 요청 시 6시간이 지난 캐시는 갱신하며, 실패하면 마지막 정상 캐시를 제공합니다.</small>{% else %}
+        {% if epg_api_url %}
+        <label class="mt-2 mb-1 font-weight-bold" for="hdhr_shyni_epg_url">Shyni XMLTV EPG</label>
+        <div class="input-group">
+          <input type="text" class="form-control" id="hdhr_shyni_epg_url" value="{{ epg_api_url }}" readonly>
+          <div class="input-group-append"><button type="button" class="btn btn-outline-secondary" id="hdhr_epg_copy_url">주소 복사</button></div>
+        </div>
+        <div class="small text-muted" id="hdhr_epg_copy_status" role="status"></div>
+        <small class="form-text text-muted">현재 M3U에 포함되고 EPG가 연결된 채널의 편성표를 제공합니다. Shyni의 XMLTV EPG 설정에 이 주소를 등록하세요.</small>{% else %}
         <small class="form-text text-muted">EPG를 사용하려면 장비 / 채널에서 XMLTV 주소를 불러오고 채널을 연결하세요.</small>{% endif %}
         <small class="form-text text-muted">채널별 지정 → 그룹별 지정 → 기본 출력 순서로 반영합니다. 혼합 출력을 쓰려면 이 기본 M3U를 Shyni에 등록하고 채널 목록을 새로고침하세요. CPU·VAAPI·NVIDIA·원본 전용 주소는 각각 고정 출력이라 채널/그룹 설정을 따르지 않습니다.</small>
         <details class="my-2"><summary>고급: 원본 전용 M3U · 트랜스코딩하지 않음</summary><code>{{ m3u_copy_url }}</code></details>
@@ -486,6 +492,19 @@
     }).always(function(){scanActionPending=false;scheduleScanStatus(100);});
   }
   $('#hdhr_probe_btn').on('click', function(){call('probe_device','#hdhr_device_result');});
+  $('#hdhr_epg_copy_url').on('click', function(){
+    var field=document.getElementById('hdhr_shyni_epg_url'), status=$('#hdhr_epg_copy_status');
+    function selectAddress(){
+      field.focus();
+      field.select();
+      status.text('선택한 주소를 복사하세요.');
+    }
+    if (window.isSecureContext && navigator.clipboard) {
+      navigator.clipboard.writeText(field.value).then(function(){status.text('EPG 주소를 복사했습니다.');},selectAddress);
+    } else {
+      selectAddress();
+    }
+  });
   $('#hdhr_epg_refresh_btn, #hdhr_epg_match_btn').on('click',function(){
     var button=$(this).prop('disabled',true),refresh=button.attr('id')==='hdhr_epg_refresh_btn';
     $('#hdhr_epg_result').text(refresh ? 'EPG를 불러오는 중…' : '이름이 일치하는 채널을 연결하는 중…').removeClass('text-danger');
