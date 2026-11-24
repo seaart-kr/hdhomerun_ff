@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from epg import EPGCache, exact_matches, validate_url
+from epg import EPGCache, exact_matches, parse_provider_order, validate_url
 
 XML = b'''<?xml version="1.0" encoding="utf-8"?><tv>
 <channel id="mbc.example"><display-name lang="en">MBC</display-name><display-name lang="ko">MBC TV</display-name></channel>
@@ -53,6 +53,18 @@ class EPGTest(unittest.TestCase):
             self.assertEqual(self.cache.snapshot(self.url), original)
             self.assertEqual(self.cache.file_path(original).read_bytes(), XML)
 
+    def test_recognized_xmltv_dtd_is_removed_without_resolving_it(self):
+        declaration = b'<!DOCTYPE tv SYSTEM "xmltv.dtd">'
+        source = XML.replace(b'?>', b'?>\r\n' + declaration + b'\r\n', 1)
+        for body in (source, gzip.compress(source)):
+            result = self.cache.refresh(self.url, Opener(body))
+            self.assertNotIn(b'<!DOCTYPE', self.cache.file_path(result).read_bytes())
+            self.assertEqual([c['id'] for c in result['channels']], ['mbc.example', 'kbs.example'])
+        for unexpected in (b'<!DOCTYPE tv SYSTEM "https://example.test/other.dtd">',
+                           b'<!DOCTYPE tv SYSTEM "xmltv.dtd" [<!ELEMENT tv ANY>]>'):
+            with self.subTest(declaration=unexpected), self.assertRaises(ValueError):
+                self.cache.refresh(self.url, Opener(source.replace(declaration, unexpected)))
+
     def test_download_and_decompression_limits_leave_valid_cache_unchanged(self):
         original = self.cache.refresh(self.url, Opener(XML))
         with patch('epg.MAX_DOWNLOAD', 10), self.assertRaises(ValueError):
@@ -87,6 +99,20 @@ class EPGTest(unittest.TestCase):
                     dict(channel_id='num',name='12'),dict(channel_id='ambiguous',name='Shared'),
                     dict(channel_id='already',name='KBS 1',epg_channel_id='existing')]
         self.assertEqual({k:v['id'] for k,v in exact_matches(channels,epg).items()}, {'kbs':'one'})
+
+    def test_provider_priority_keeps_manual_matches_and_does_not_guess_equal_rank_ties(self):
+        source = [
+            {'id': 'mbc.kt', 'name': 'MBC'}, {'id': 'mbc.sk', 'name': 'MBC'},
+            {'id': 'kbs.kt', 'name': 'KBS'}, {'id': 'kbs2.kt', 'name': 'KBS'},
+            {'id': 'ebs.lg', 'name': 'EBS'}, {'id': 'radio.example', 'name': 'Radio'},
+        ]
+        scan = [{'channel_id': n.lower(), 'name': n} for n in ('MBC', 'KBS', 'EBS', 'Radio')]
+        scan.append({'channel_id': 'manual', 'name': 'MBC', 'epg_channel_id': 'mbc.sk'})
+        matches = exact_matches(scan, source, parse_provider_order('KT, sk, kt'))
+        self.assertEqual({key: value['id'] for key, value in matches.items()},
+                         {'mbc': 'mbc.kt', 'radio': 'radio.example'})
+        with self.assertRaises(ValueError):
+            parse_provider_order('KT,unknown')
 
     def test_urls_allow_private_xmltv_and_reject_unsafe_schemes_and_credentials(self):
         self.assertEqual(validate_url(' http://192.168.2.10/epg.xml.gz '), 'http://192.168.2.10/epg.xml.gz')

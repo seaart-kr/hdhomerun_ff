@@ -5,7 +5,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from channel_groups import effective_group, fetch_rules, parse_rules
+from channel_groups import channel_identity, effective_group, fetch_rules, parse_channel_identities, parse_rules
 from model import ChannelStore
 from playlist import build_shyni_m3u
 
@@ -45,6 +45,25 @@ class ChannelGroupsTest(unittest.TestCase):
         self.rules['alias_exact']['jtbc']='스포츠'
         self.assertEqual(effective_group('JTBC','HDHomeRun',self.rules),'종합편성')
         self.assertEqual(effective_group('JTBC','내 채널',self.rules),'내 채널')
+
+    def test_sheet_keeps_alias_collisions_and_excludes_unused_channels(self):
+        catalog = {'tables': {
+            'channel_master': [
+                {'id': 1, 'standard_name': 'OCN Movies'},
+                {'id': 2, 'standard_name': 'OCN Movies 2'},
+                {'id': 3, 'standard_name': 'Old Channel', 'receive_category': '미사용'},
+            ],
+            'channel_alias': [
+                {'channel_id': 1, 'alias_name': 'OCN 무비|영화 채널'},
+                {'channel_id': 2, 'alias_name': '영화 채널|OCN Movies'},
+                {'channel_id': 3, 'alias_name': '폐국'},
+            ],
+        }}
+        identities = parse_channel_identities(catalog)
+        self.assertEqual(channel_identity('OCN무비', identities), '1')
+        self.assertEqual(channel_identity('OCN Movies', identities), '1')
+        self.assertIsNone(channel_identity('영화 채널', identities))
+        self.assertIsNone(channel_identity('폐국', identities))
 
     def test_unused_empty_and_malformed_remote_rules_are_not_saved(self):
         data=payload()

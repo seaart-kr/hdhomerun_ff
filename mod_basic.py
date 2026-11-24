@@ -26,9 +26,9 @@ from .device_config import tuner_budget, discovery_summary, broadcast_counts, us
 from .transcode_config import DEFAULTS as TRANSCODE_DEFAULTS, PRESETS, validate_options
 from .setup import P, logger
 from .task import snapshot_channel_rows
-from .channel_groups import GROUP_ORDER, group_sort_key, fetch_rules as fetch_group_rules
+from .channel_groups import GROUP_ORDER, channel_identity, group_sort_key, fetch_rules as fetch_group_rules
 from .channel_management import is_encrypted, preview_channel, preview_profile
-from .epg import EPGCache, exact_matches as match_epg, filtered_xmltv, validate_url as validate_epg_url
+from .epg import EPGCache, exact_matches as match_epg, filtered_xmltv, parse_provider_order, validate_url as validate_epg_url
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -204,6 +204,7 @@ class ModuleBasic(PluginModuleBase):
         'basic_hdhomerun_stream_format': 'auto',
         'basic_hdhomerun_playlist_source': 'scan',
         'basic_epg_url': '',
+        'basic_epg_provider_priority': '',
         'basic_hls_output_profile': 'mobile_cpu',
         'basic_hls_idle_timeout': '60',
         'basic_vaapi_driver': 'auto',
@@ -241,6 +242,8 @@ class ModuleBasic(PluginModuleBase):
         _transcode_form(req)
         if 'basic_epg_url' in req.form:
             validate_epg_url(req.form['basic_epg_url'])
+        if 'basic_epg_provider_priority' in req.form:
+            parse_provider_order(req.form['basic_epg_provider_priority'])
         if 'basic_hls_output_profile' in req.form:
             _playback_form(req)
         if 'basic_vaapi_driver' in req.form:
@@ -345,20 +348,37 @@ class ModuleBasic(PluginModuleBase):
                 saved_url = (P.ModelSetting.get('basic_epg_url') or '').strip()
                 if sub == 'refresh_epg':
                     url = validate_epg_url(req.form.get('basic_epg_url', saved_url))
+                    order = parse_provider_order(req.form.get('basic_epg_provider_priority', P.ModelSetting.get('basic_epg_provider_priority')))
                     data = cache.refresh(url)
                     P.ModelSetting.set('basic_epg_url', url)
+                    P.ModelSetting.set('basic_epg_provider_priority', ','.join(order))
                     return jsonify({'ret': 'success', 'count': len(data['channels']),
-                        'msg': f'EPG 채널 {len(data["channels"])}개를 불러왔습니다. 정확히 이름이 일치하는 채널은 자동 연결하고, 나머지는 목록에서 직접 선택하세요.'})
+                        'msg': f'EPG 채널 {len(data["channels"])}개를 불러왔습니다. [EPG 채널 자동 연결]을 눌러 연결하세요.'})
                 data = cache.snapshot(saved_url)
                 identity = str(req.form.get('epg_channel_id') or '').strip()
                 if not data and not (sub == 'set_channel_epg' and not identity):
                     raise ValueError('먼저 EPG 주소를 저장하고 불러오세요.')
                 device_id = P.ModelSetting.get('basic_hdhomerun_device_id')
                 if sub == 'auto_match_epg':
+                    order = parse_provider_order(req.form.get('basic_epg_provider_priority', P.ModelSetting.get('basic_epg_provider_priority')))
+                    identities = store.group_rules()['rules'].get('_channel_ids')
+                    if not identities:
+                        try:
+                            rules = fetch_group_rules()
+                            identities = rules.get('_channel_ids')
+                            if identities:
+                                store.save_group_rules(rules)
+                        except ValueError:
+                            identities = None
                     channels = [c for c in store.list_channels() if c['device_id'] == device_id]
-                    count = store.apply_epg_matches(match_epg(channels, data['channels']))
+                    matches = match_epg(channels, data['channels'], order,
+                                        catalog_identity=(lambda name: channel_identity(name, identities)) if identities else None)
+                    count = store.apply_epg_matches(matches)
+                    P.ModelSetting.set('basic_epg_provider_priority', ','.join(order))
+                    source = '채널명과 공용 기준표의 별칭으로' if identities else '채널명으로'
                     return jsonify({'ret': 'success', 'matched': count,
-                        'msg': f'이름이 정확히 일치하는 {count}개를 EPG에 연결했습니다. 수동 이름은 유지했습니다. 이름 미수신·중복 후보는 직접 선택하세요.'})
+                        'msg': f'{source} {count}개를 EPG에 연결했습니다.' +
+                               ('' if identities else ' 공용 기준표를 불러오면 별칭도 확인할 수 있습니다.')})
                 channel_id = str(req.form.get('channel_id') or '').strip()
                 channel = store.get_channel(channel_id)
                 if not channel or channel['device_id'] != device_id:

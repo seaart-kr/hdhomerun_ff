@@ -162,6 +162,44 @@ class AdminRoutesTest(unittest.TestCase):
         cleared=self.client.post('/ajax/set_channel_epg',data={'channel_id':'free','epg_channel_id':''}).get_json()
         self.assertEqual(cleared['ret'],'success')
 
+    def test_mapped_myepg_provider_matches_in_playlist_and_guide(self):
+        self.seed_epg(b'''<?xml version="1.0"?>
+          <!DOCTYPE tv SYSTEM "xmltv.dtd">
+          <tv><channel id="radio.kt"><display-name>Radio Name</display-name></channel>
+          <channel id="radio.sk"><display-name>Radio Name</display-name></channel>
+          <programme channel="radio.sk"><title>Radio Show</title></programme></tv>''')
+        self.store.set_name('free', 'Radio Name')
+        self.store.set_selected('free', True)
+        self.store.save_group_rules({'master_exact': {'radio name': '라디오'},
+                                     '_channel_ids': {'master_exact': {'radio name': ['1']}}})
+        result = self.client.post('/ajax/auto_match_epg', data={'basic_epg_provider_priority': 'SK, KT'}).get_json()
+        self.assertEqual(result['matched'], 1)
+        self.assertIn('tvg-id="radio.sk"', self.client.get('/api/m3u_shyni').text)
+        guide = ET.fromstring(self.client.get('/api/epg_shyni.xml', buffered=True).data)
+        self.assertEqual([(e.tag, e.get('id') or e.get('channel')) for e in guide],
+                         [('channel', 'radio.sk'), ('programme', 'radio.sk')])
+
+    def test_shared_sheet_matches_different_scan_and_myepg_names(self):
+        self.seed_epg(b'''<tv>
+          <channel id="ocn.kt"><display-name>OCN Movies</display-name></channel>
+          <channel id="ocn.sk"><display-name>OCN Movies</display-name></channel>
+          <programme channel="ocn.kt"><title>Film</title></programme></tv>''')
+        self.store.set_name('free', 'OCN 무비')
+        self.store.set_selected('free', True)
+        self.store.save_group_rules({
+            'master_exact': {'ocn movies': '영화'},
+            '_channel_ids': {'master_exact': {'ocn movies': ['1']}, 'alias_exact': {'ocn 무비': ['1']}},
+        })
+
+        result = self.client.post('/ajax/auto_match_epg', data={'basic_epg_provider_priority': 'KT, SK'}).get_json()
+
+        self.assertEqual(result['matched'], 1)
+        self.assertEqual(self.store.get_channel('free')['name'], 'OCN 무비')
+        self.assertIn('tvg-id="ocn.kt"', self.client.get('/api/m3u_shyni').text)
+        guide = ET.fromstring(self.client.get('/api/epg_shyni.xml', buffered=True).data)
+        self.assertEqual([(e.tag, e.get('id') or e.get('channel')) for e in guide],
+                         [('channel', 'ocn.kt'), ('programme', 'ocn.kt')])
+
     def test_shyni_epg_uses_only_current_playlist_matches_and_keeps_program_details(self):
         guide = b'''<tv xmlns="urn:xmltv" source-info-url="https://epg.example.test/?apikey=test-source-secret">
           <channel id="radio&amp;local"><display-name lang="ko">Radio</display-name></channel>

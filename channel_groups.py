@@ -7,6 +7,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections import defaultdict
 
 RULES_URL = 'https://ff.aha3011.mywire.org/tvh_m3u_plugin/normal/catalog'
 # Distributed with tvh_m3u_plugin for read-only access to the shared catalog.
@@ -122,58 +123,99 @@ def _download_catalog(endpoint, api_key):
         raise ValueError('공용 채널 기준표 연결에 실패했습니다. 기존 그룹을 유지하며 잠시 후 다시 시도할 수 있습니다.') from exc
 
 
-def parse_icon_catalog(payload):
-    """The shared match endpoint has no icons; reuse its separate logo tables."""
+def _catalog_tables(payload):
     if not isinstance(payload, dict) or payload.get('ret', 'success') != 'success':
-        raise ValueError('공용 아이콘 목록을 불러오지 못했습니다. 기존 기준표를 유지합니다.')
+        raise ValueError('공용 채널 목록을 불러오지 못했습니다. 기존 기준표를 유지합니다.')
     tables = payload.get('tables', payload)
-    if not isinstance(tables, dict) or not any(key in tables for key in ('custom_logo', 'provider_logo_local')):
-        raise ValueError('공용 아이콘 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
+    if not isinstance(tables, dict):
+        raise ValueError('공용 채널 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
+    return tables
 
-    def rows(table):
-        value = tables.get(table, [])
-        if not isinstance(value, list):
-            raise ValueError('공용 아이콘 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
-        return [row for row in value if isinstance(row, dict)]
 
-    def first(row, *keys):
-        return next((str(row[key]).strip() for key in keys if row.get(key) is not None and str(row[key]).strip()), '')
+def _catalog_rows(tables, table):
+    value = tables.get(table, [])
+    if not isinstance(value, list):
+        raise ValueError('공용 채널 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
+    return [row for row in value if isinstance(row, dict)]
 
+
+def _first(row, *keys):
+    return next((str(row[key]).strip() for key in keys if row.get(key) is not None and str(row[key]).strip()), '')
+
+
+def _catalog_names(tables, *, include_unused):
     def aliases(value):
         return [name.strip() for name in re.split(r'[|\r\n]+', value) if name.strip()]
 
     names_by_id = {}
     ids_by_name = {}
-    for row in rows('channel_master'):
-        identity = first(row, 'id', 'channel_master_id', 'channel_id', 'master_id')
-        name = first(row, 'standard_name', 'channel_name', 'name', 'title')
+    for row in _catalog_rows(tables, 'channel_master'):
+        if not include_unused and any('미사용' in str(row.get(field) or '')
+                                      for field in ('group_name', 'group_category', 'receive_category')):
+            continue
+        identity = _first(row, 'id', 'channel_master_id', 'channel_id', 'master_id')
+        name = _first(row, 'standard_name', 'channel_name', 'name', 'title')
         if identity and name:
             names_by_id.setdefault(identity, []).append((name, False))
-            ids_by_name[name.lower()] = identity
-            for alias in aliases(first(row, 'e_aka', 'aka_names', 'aka_name', 'aliases', 'aka')):
+            ids_by_name.setdefault(name.lower(), set()).add(identity)
+            for alias in aliases(_first(row, 'e_aka', 'aka_names', 'aka_name', 'aliases', 'aka')):
                 names_by_id[identity].append((alias, True))
-    for row in rows('channel_alias'):
-        identity = first(row, 'channel_master_id', 'channel_id', 'matched_channel_id', 'master_id')
-        identity = identity or ids_by_name.get(first(row, 'standard_name', 'channel_name', 'master_name').lower(), '')
-        if identity:
-            for alias in aliases(first(row, 'alias_name', 'aka_name', 'aka_names', 'aka', 'alias', 'name', 'e_aka')):
+    for row in _catalog_rows(tables, 'channel_alias'):
+        identity = _first(row, 'channel_master_id', 'channel_id', 'matched_channel_id', 'master_id')
+        if not identity:
+            names = ids_by_name.get(_first(row, 'standard_name', 'channel_name', 'master_name').lower(), set())
+            identity = next(iter(names)) if len(names) == 1 else ''
+        if identity and (include_unused or identity in names_by_id):
+            for alias in aliases(_first(row, 'alias_name', 'aka_name', 'aka_names', 'aka', 'alias', 'name', 'e_aka')):
                 names_by_id.setdefault(identity, []).append((alias, True))
+    return names_by_id
+
+
+def parse_channel_identities(payload):
+    """Index sheet names without collapsing aliases shared by multiple channels."""
+    buckets = {bucket: defaultdict(set) for bucket in BUCKETS}
+    for identity, names in _catalog_names(_catalog_tables(payload), include_unused=False).items():
+        for name, alias in names:
+            if len(name) > 256:
+                continue
+            prefix = 'alias' if alias else 'master'
+            for suffix, key in (('exact', name.lower()), ('norm', normalize_name(name))):
+                if key:
+                    buckets[f'{prefix}_{suffix}'][key].add(identity)
+    return {bucket: {key: sorted(ids) for key, ids in entries.items()} for bucket, entries in buckets.items()}
+
+
+def channel_identity(name, identities):
+    exact, normalized = str(name or '').strip().lower(), normalize_name(name)
+    for bucket in BUCKETS:
+        candidates = identities.get(bucket, {}).get(normalized if bucket.endswith('_norm') else exact, ())
+        if candidates:
+            return candidates[0] if len(candidates) == 1 else None
+    return None
+
+
+def parse_icon_catalog(payload):
+    """The shared match endpoint has no icons; reuse its separate logo tables."""
+    tables = _catalog_tables(payload)
+    if not any(key in tables for key in ('custom_logo', 'provider_logo_local')):
+        raise ValueError('공용 아이콘 목록 형식을 확인하세요. 기존 기준표를 유지합니다.')
+    names_by_id = _catalog_names(tables, include_unused=True)
 
     logos = {bucket: {} for bucket in BUCKETS}
     scores = {bucket: {} for bucket in BUCKETS}
     for table in ('custom_logo', 'provider_logo_local'):
-        for row in rows(table):
-            provider = first(row, 'provider', 'provider_name', 'provider_type', 'logo_type', 'source_type').lower()
+        for row in _catalog_rows(tables, table):
+            provider = _first(row, 'provider', 'provider_name', 'provider_type', 'logo_type', 'source_type').lower()
             priority = 0 if table == 'custom_logo' or any(k in provider for k in ('custom', 'manual', 'user')) else {'kt':1,'wavve':2,'tving':3,'sk':4}.get(provider, 5)
-            raw_url = first(row, 'logo_url_template', 'custom_logo_url', 'logo_url', 'preview_url', 'local_url', 'stored_path', 'path', 'url')
-            filename = first(row, 'stored_filename', 'filename', 'logo_file', 'file_name')
-            url = logo_url(raw_url) or logo_url('/customlogo/' + filename if filename else '') or logo_url(first(row, 'original_logo_url', 'origin_logo_url'))
+            raw_url = _first(row, 'logo_url_template', 'custom_logo_url', 'logo_url', 'preview_url', 'local_url', 'stored_path', 'path', 'url')
+            filename = _first(row, 'stored_filename', 'filename', 'logo_file', 'file_name')
+            url = logo_url(raw_url) or logo_url('/customlogo/' + filename if filename else '') or logo_url(_first(row, 'original_logo_url', 'origin_logo_url'))
             if not url:
                 continue
-            identity = first(row, 'matched_channel_id', 'channel_master_id', 'channel_id', 'master_id', 'cm_id')
+            identity = _first(row, 'matched_channel_id', 'channel_master_id', 'channel_id', 'master_id', 'cm_id')
             names = list(names_by_id.get(identity, []))
-            names.append((first(row, 'standard_name', 'channel_name', 'name'), False))
-            names.append((first(row, 'source_channel_name', 'provider_channel_name', 'original_name', 'source_name'), False))
+            names.append((_first(row, 'standard_name', 'channel_name', 'name'), False))
+            names.append((_first(row, 'source_channel_name', 'provider_channel_name', 'original_name', 'source_name'), False))
             for name, alias in names:
                 if not name or len(name) > 256:
                     continue
@@ -191,7 +233,11 @@ def parse_icon_catalog(payload):
 def fetch_rules():
     api_key = os.environ.get('HDHOMERUN_FF_GROUP_APIKEY', PUBLIC_READ_APIKEY).strip()
     rules = parse_rules(_download_catalog('match_rules', api_key))
-    logos = parse_icon_catalog(_download_catalog('db_dump', api_key))
+    catalog = _download_catalog('db_dump', api_key)
+    logos = parse_icon_catalog(catalog)
+    identities = parse_channel_identities(catalog)
+    if any(identities.values()):
+        rules['_channel_ids'] = identities
     for bucket in BUCKETS:
         for key, url in rules.get('_logos', {}).get(bucket, {}).items():
             priority = rules.get('_logos', {}).get('_priorities', {}).get(bucket, {}).get(key, 99)

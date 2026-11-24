@@ -21,6 +21,12 @@ from pathlib import Path
 MAX_DOWNLOAD = 32 * 1024 * 1024
 MAX_XML = 128 * 1024 * 1024
 REFRESH_SECONDS = 6 * 3600
+MYEPG_PROVIDERS = frozenset(('kt', 'sk', 'lgu', 'wavve', 'tving', 'naver', 'daum', 'sbs', 'spotv'))
+# Accept only the conventional XMLTV declaration, before the root element.
+# Strip it before parsing so the parser never sees a DTD or external reference.
+_XMLTV_DTD = re.compile(rb'\A(?:\xef\xbb\xbf)?(?:<\?xml[ \t][^<>?]{1,250}\?>)?[ \t\r\n]*'
+                        rb'(<!DOCTYPE[ \t]+tv[ \t]+SYSTEM[ \t]+(?:"xmltv\.dtd"|\x27xmltv\.dtd\x27)[ \t]*>)'
+                        rb'(?=[ \t\r\n]*<tv[ \t\r\n/>])')
 _refresh_lock = threading.Lock()
 
 
@@ -56,6 +62,20 @@ def _clean_name(value):
 
 def _tag(element):
     return element.tag.rsplit('}', 1)[-1]
+
+
+def parse_provider_order(value):
+    values = (part.strip().lower() for part in str(value or '').split(',') if part.strip())
+    order = tuple(dict.fromkeys('lgu' if provider == 'lg' else provider for provider in values))
+    if any(provider not in MYEPG_PROVIDERS for provider in order):
+        raise ValueError('EPG 공급처에는 KT, SK, LG, WAVVE, TVING, NAVER, DAUM, SBS, SPOTV를 사용할 수 있습니다.')
+    return order
+
+
+def _provider(channel_id):
+    tokens = re.split(r'[._:/-]', channel_id.lower())
+    return next(('lgu' if token == 'lg' else token for token in reversed(tokens)
+                 if token in MYEPG_PROVIDERS or token == 'lg'), '')
 
 
 def _xmltv_entries(source):
@@ -192,9 +212,15 @@ class EPGCache:
                     chunk = reader.read(65536)
                     if not chunk:
                         break
+                    first_chunk = total == 0
                     total += len(chunk)
                     if total > MAX_XML:
                         raise ValueError('압축 해제한 EPG 크기 한도를 초과했습니다.')
+                    if first_chunk:
+                        match = _XMLTV_DTD.match(chunk)
+                        if match:
+                            first, last = match.span(1)
+                            chunk = chunk[:first] + chunk[last:]
                     # XMLTV feeds are read as UTF-8/compatible text. Reject
                     # UTF-16/32 NUL bytes so declaration checks cannot be
                     # bypassed with an alternate byte representation.
@@ -255,28 +281,49 @@ class EPGCache:
         return self.root / filename
 
 
-def exact_matches(channels, epg_channels):
-    """Never infer an EPG identity from a frequency, service number or partial name."""
+def exact_matches(channels, epg_channels, provider_order=(), *, catalog_identity=None):
+    """Match exact names, then fall back to a shared channel identity."""
     def key(name):
         name = unicodedata.normalize('NFKC', str(name or '')).strip()
         if not name or name.lower() in {'unknown', '0'} or name.isdigit() or re.fullmatch(r'(?:Program\s*\d+|채널\s*[\d.]+)', name, re.I):
             return ''
         return re.sub(r'[\s\-_./()\[\]{}]+', '', name.upper())
-    names, entries = {}, {}
+    def catalog_id(names):
+        identities = {catalog_identity(name) for name in names if key(name)} - {None}
+        return next(iter(identities)) if len(identities) == 1 else None
+
+    def choose(ids):
+        if len(ids) > 1 and rank:
+            best = min(preferred[identity] for identity in ids)
+            ids = {identity for identity in ids if preferred[identity] == best}
+        return next(iter(ids)) if len(ids) == 1 else None
+
+    rank = {provider: priority for priority, provider in enumerate(provider_order)}
+    names, catalog, entries, preferred = {}, {}, {}, {}
     for entry in epg_channels:
-        entries[entry['id']] = entry
-        for name in entry.get('names') or [entry['name']]:
+        identity = entry['id']
+        provider = _provider(identity) if rank else ''
+        if provider and provider not in rank:
+            continue
+        entries[identity] = entry
+        preferred[identity] = rank.get(provider, len(rank))
+        entry_names = entry.get('names') or [entry['name']]
+        for name in entry_names:
             normalized = key(name)
             if normalized:
-                names.setdefault(normalized, set()).add(entry['id'])
+                names.setdefault(normalized, set()).add(identity)
+        if catalog_identity and (shared_id := catalog_id(entry_names)):
+            catalog.setdefault(shared_id, set()).add(identity)
     matches = {}
     for channel in channels:
         if channel.get('epg_channel_id'):
             continue
-        ids = set()
-        for name in [channel.get('name'), channel.get('broadcast_name')]:
-            ids.update(names.get(key(name), ()))
-        if len(ids) == 1:
-            identity = next(iter(ids))
+        channel_names = (channel.get('name'), channel.get('broadcast_name'))
+        ids = {identity for name in channel_names for identity in names.get(key(name), ())}
+        identity = choose(ids)
+        if not ids and catalog:
+            shared_id = catalog_id(channel_names)
+            identity = choose(catalog.get(shared_id, ()))
+        if identity:
             matches[channel['channel_id']] = entries[identity]
     return matches

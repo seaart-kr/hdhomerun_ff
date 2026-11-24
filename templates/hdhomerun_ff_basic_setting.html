@@ -30,9 +30,11 @@
           <label class="col-sm-3 col-form-label" for="hdhr_epg_source">XMLTV EPG 주소</label>
           <div class="col-sm-9">
             <input type="url" class="form-control" id="hdhr_epg_source" name="basic_epg_url" value="{{ arg.get('basic_epg_url','') }}" placeholder="https://제공처/epg.xml 또는 epg.xml.gz" autocomplete="off" spellcheck="false">
+            <label class="mt-2" for="hdhr_epg_provider_priority">MyEPG 공급처 우선순위</label>
+            <input type="text" class="form-control" id="hdhr_epg_provider_priority" name="basic_epg_provider_priority" value="{{ arg.get('basic_epg_provider_priority','') }}" placeholder="예: KT, SK, LG" autocomplete="off" spellcheck="false">
             <button type="button" class="btn btn-outline-primary mt-2" id="hdhr_epg_refresh_btn">EPG 저장·불러오기</button>
-            <button type="button" class="btn btn-outline-secondary mt-2" id="hdhr_epg_match_btn" {% if not epg_channels %}disabled{% endif %}>이름 일치 채널 자동 연결</button>
-            <small class="form-text text-muted">EPG 주소는 이 FF 설정에만 저장됩니다. XMLTV·gzip을 지원합니다. 자동 연결은 이름이 정확히 일치하는 경우만 적용하며, 이름이 없는 채널은 재생 확인 후 EPG 목록에서 직접 선택하세요. 자동 연결은 수동 이름을 덮지 않습니다.</small>
+            <button type="button" class="btn btn-outline-secondary mt-2" id="hdhr_epg_match_btn" {% if not epg_channels %}disabled{% endif %}>EPG 채널 자동 연결</button>
+            <small class="form-text text-muted">채널명과 공용 기준표의 별칭으로 편성표를 연결합니다. 여러 공급처에서 같은 채널을 받으면 위 순서를 적용합니다. 기존 연결과 채널명은 유지합니다.</small>
             <small class="form-text text-muted">불러온 EPG {{ epg_channels|length }}개{% if epg_updated_time %} · 저장 시각 {{ epg_updated_time }}{% endif %}</small>
             <div id="hdhr_epg_result" class="small mt-2" role="status" aria-live="polite"></div>
           </div>
@@ -507,9 +509,11 @@
   });
   $('#hdhr_epg_refresh_btn, #hdhr_epg_match_btn').on('click',function(){
     var button=$(this).prop('disabled',true),refresh=button.attr('id')==='hdhr_epg_refresh_btn';
-    $('#hdhr_epg_result').text(refresh ? 'EPG를 불러오는 중…' : '이름이 일치하는 채널을 연결하는 중…').removeClass('text-danger');
+    var data={basic_epg_provider_priority:$('#hdhr_epg_provider_priority').val()};
+    if (refresh) data.basic_epg_url=$('#hdhr_epg_source').val();
+    $('#hdhr_epg_result').text(refresh ? 'EPG를 불러오는 중…' : '공용 기준표로 EPG 채널을 연결하는 중…').removeClass('text-danger');
     $.ajax({url:root+(refresh ? 'refresh_epg' : 'auto_match_epg'),type:'POST',dataType:'json',timeout:90000,global:false,
-      data:refresh ? {basic_epg_url:$('#hdhr_epg_source').val()} : {}
+      data:data
     }).done(function(ret){
       $('#hdhr_epg_result').text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
       if(ret.ret==='success') window.location.reload();
