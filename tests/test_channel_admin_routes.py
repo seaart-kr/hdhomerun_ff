@@ -9,6 +9,7 @@ import tempfile
 import types
 import unittest
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 from flask import Flask, request
@@ -199,6 +200,32 @@ class AdminRoutesTest(unittest.TestCase):
         guide = ET.fromstring(self.client.get('/api/epg_shyni.xml', buffered=True).data)
         self.assertEqual([(e.tag, e.get('id') or e.get('channel')) for e in guide],
                          [('channel', 'ocn.kt'), ('programme', 'ocn.kt')])
+
+    def test_channel_list_shows_matching_programme_without_fetching_upstream(self):
+        self.seed_epg(b'''<tv><channel id="radio.example"><display-name>Radio</display-name></channel>
+          <channel id="other"><display-name>Other</display-name></channel>
+          <programme channel="radio.example" start="20261124100000 +0900" stop="20261124110000 +0900">
+            <title>Morning &amp; Music</title></programme>
+          <programme channel="other" start="20261124100000 +0900" stop="20261124110000 +0900">
+            <title>Other device</title></programme></tv>''')
+        self.store.set_epg('free', 'radio.example', 'Radio')
+        self.store.replace_preset_scan_channels('another', [dict(self.rows[0], channel_id='other-device', device_id='another')])
+        self.store.set_epg('other-device', 'other', 'Other')
+        from epg import current_programmes
+
+        now = datetime(2026, 11, 24, 1, 30, tzinfo=timezone.utc).timestamp()
+        with patch.object(self.module, 'current_programmes', side_effect=lambda path, ids: current_programmes(path, ids, now)), \
+                patch.object(self.module.EPGCache, 'refresh', side_effect=AssertionError('must read from cache')):
+            result = self.client.post('/ajax/current_programmes')
+        self.assertEqual(result.status_code, 200)
+        self.assertEqual(result.headers['Cache-Control'], 'no-store')
+        self.assertEqual(set(result.json['programmes']), {'radio.example'})
+        self.assertEqual(result.json['programmes']['radio.example']['title'], 'Morning & Music')
+        page = self.client.get('/menu/device').text
+        self.assertIn('data-epg-id="radio.example"', page)
+        self.assertIn('class="hdhr-channel-details" id="hdhr_channel_panel_', page)
+        self.assertIn('출력 방식', page)
+        self.assertNotIn('test-source-secret', result.text)
 
     def test_shyni_epg_uses_only_current_playlist_matches_and_keeps_program_details(self):
         guide = b'''<tv xmlns="urn:xmltv" source-info-url="https://epg.example.test/?apikey=test-source-secret">

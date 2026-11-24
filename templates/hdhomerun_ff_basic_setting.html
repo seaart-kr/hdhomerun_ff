@@ -1,6 +1,7 @@
 {% extends "base.html" %}
 {% block content %}
 {% set current_page = page_sub|default('device', true) %}
+{% if current_page == 'device' %}<link rel="stylesheet" href="/{{ package_name }}/static/channel_list.css">{% endif %}
 {% macro output_options(current, inherit_label) %}
   <option value="" {% if not current %}selected{% endif %}>{{ inherit_label }}</option>
   {% for value,label in output_profile_labels.items() %}
@@ -259,76 +260,123 @@
   </form>
 
   {% if current_page == 'device' %}
-  <div class="card mb-3">
-    <div class="card-header">채널 목록 · 그룹별</div>
-    <div class="card-body table-responsive">
-      <p class="small text-muted">사용할 채널을 체크하세요. 변경은 즉시 저장되고 다시 스캔해도 선택이 유지됩니다. 새 스캔 채널은 이름이 있으면 기본 선택됩니다.</p>
-      <div class="mb-3">
-        <button type="button" class="btn btn-outline-primary" id="hdhr_group_refresh_btn">기본 그룹 / 아이콘 불러오기 · 갱신</button>
-        <span class="ml-2 small text-muted">{% if group_rules_updated_time %}기준표 저장: {{ group_rules_updated_time }}{% else %}기본 그룹 기준표를 한 번 불러오세요.{% endif %}</span>
-        <div id="hdhr_group_result" class="mt-2 small" role="status" aria-live="polite"></div>
-        <small class="form-text text-muted">TVH M3U와 같은 공용 기준표로 채널명·별칭을 매칭합니다. 한 번 불러오면 새 채널에도 그룹·아이콘이 적용됩니다. 공용 아이콘은 기존 M3U 플러그인의 GitHub 이미지를 사용합니다. 아이콘 주소를 직접 저장하면 자동 아이콘보다 우선하며 비워서 저장하면 자동으로 돌아갑니다. 다른 플러그인은 설치하지 않아도 됩니다.</small>
-      </div>
-      <div class="mb-2"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span><span class="ml-3 small" id="hdhr_channel_save_status" role="status" aria-live="polite"></span></div>
-      <div class="mb-3">
-        <button type="button" id="hdhr_delete_encrypted_btn" class="btn btn-outline-danger" data-count="{{ encrypted_channel_count }}" {% if not encrypted_channel_count %}disabled{% endif %}>암호화 채널만 일괄 삭제 ({{ encrypted_channel_count }}개)</button>
-        <span class="small ml-2" id="hdhr_delete_result" role="status" aria-live="polite"></span>
-        <small class="form-text text-muted">삭제는 현재 목록에만 적용됩니다. 재스캔·장비 라인업 갱신에서 다시 발견되면 등록됩니다. 제어 서비스·데이터 없음은 일괄 삭제 대상이 아닙니다.</small>
-      </div>
-      <details class="mb-3 small text-muted"><summary>이름 미수신·암호화·제어 서비스·데이터 없음 안내</summary>
-        <p class="mt-2">이름이 없는 비암호화 채널은 <strong>새 창 재생</strong>으로 확인한 뒤 이름을 저장하세요. 사용 체크를 하지 않아도 미리보기할 수 있습니다. 스캔 중에는 미리보기·삭제를 기다려야 하며, 재생에는 유휴 튜너가 필요합니다. 장비 제공 라인업도 같은 방식으로 확인할 수 있습니다.</p>
-        <ul><li>암호화: 방송사 인증을 지원하는 공식 수신 장비가 필요하며, FFmpeg 변환으로 해제되지 않습니다.</li>
-          <li>제어 서비스: 홈런이 방송 제어·안내용 데이터 서비스로 분류한 항목입니다. 일반 TV·라디오 영상이 없을 수 있습니다.</li>
-          <li>데이터 없음: 스캔 당시 유효한 방송 데이터를 받지 못한 상태입니다. 휴지 채널·신호·수신 대기 등의 영향으로 재스캔 결과가 달라질 수 있습니다.</li></ul>
-        <p>제어 서비스·데이터 없음도 암호화가 아니면 시험 재생할 수 있지만, 재생 가능한 방송이 아닐 수 있습니다. 이름 저장 후에는 Shyni M3U 목록도 새로고침하세요.</p>
+  <div class="card mb-3" id="hdhr_channel_list">
+    <div class="card-header d-flex flex-wrap justify-content-between align-items-center">
+      <strong>채널 목록</strong>
+      <span class="small"><span id="hdhr_channel_selection_count">{{ selected_channel_count }}개 사용 선택</span>
+        <span id="hdhr_channel_save_status" class="ml-2" role="status" aria-live="polite"></span>
+      </span>
+    </div>
+    <div class="card-body">
+      <details class="hdhr-list-tools mb-3">
+        <summary>목록 관리</summary>
+        <div class="mt-2">
+          <button type="button" class="btn btn-sm btn-outline-primary" id="hdhr_group_refresh_btn">그룹·아이콘 기준표 갱신</button>
+          <button type="button" class="btn btn-sm btn-outline-danger" id="hdhr_delete_encrypted_btn" data-count="{{ encrypted_channel_count }}" {% if not encrypted_channel_count %}disabled{% endif %}>암호화 채널만 일괄 삭제 ({{ encrypted_channel_count }}개)</button>
+          {% if group_rules_updated_time %}<span class="ml-2 small text-muted">기준표 저장 {{ group_rules_updated_time }}</span>{% endif %}
+          <div id="hdhr_group_result" class="mt-2 small" role="status" aria-live="polite"></div>
+          <details class="small text-muted mt-2">
+            <summary>스캔 상태와 재생 안내</summary>
+            <p class="mt-2 mb-1">이름이 없는 채널도 유휴 튜너가 있으면 재생으로 확인할 수 있습니다. 확인한 이름은 채널 설정에서 저장하세요.</p>
+            <ul class="mb-1">
+              <li>암호화 채널은 방송사 인증 장비가 필요합니다. 삭제한 채널은 다음 스캔에서 다시 발견될 수 있습니다.</li>
+              <li>제어 서비스와 데이터 없음 채널은 시험 재생할 수 있습니다. 방송 데이터가 있으면 재생됩니다.</li>
+            </ul>
+          </details>
+        </div>
       </details>
+      <div id="hdhr_delete_result" class="small" role="status" aria-live="polite"></div>
+      <div id="hdhr_programme_status" class="small text-muted mb-2" role="status" hidden></div>
       <datalist id="hdhr_group_names">{% for group in group_names %}<option value="{{ group }}">{% endfor %}</datalist>
-      <p class="small text-muted">그룹은 목록에서 고르거나 새 이름을 입력해 저장하세요. 비워서 저장하면 자동 분류로 돌아갑니다. 수동 이름을 비우면 연결된 EPG명 또는 방송명을 사용합니다. 변경 후 Shyni에서 M3U 채널 목록을 새로고침하세요.</p>
       <datalist id="hdhr_epg_channels">{% for entry in epg_channels %}<option value="{{ entry.id }}" label="{{ entry.name }}">{{ entry.name }}</option>{% endfor %}</datalist>
-      <table class="table table-sm"><thead><tr><th>사용</th><th>번호</th><th>아이콘</th><th>이름 / 미리보기</th><th>그룹</th><th>출력 방식</th><th>출처</th><th>영상</th><th>음성</th><th>재생 상태</th><th>관리</th></tr></thead><tbody>
-      {% for channel in channels %}
-      {% if loop.changed(channel.group_name) %}
-      <tr class="hdhr-channel-group-heading table-active"><th colspan="11" scope="rowgroup">{{ channel.group_name }} <span class="badge badge-secondary ml-2">{{ group_channel_counts[channel.group_name] }}개</span></th></tr>
+      {% if channel_groups %}
+      <div class="hdhr-channel-line hdhr-channel-columns small" aria-hidden="true">
+        <span>사용</span><span>채널 / 현재 방송</span><span>그룹</span><span>출력 방식</span><span></span>
+      </div>
       {% endif %}
-      <tr class="hdhr-channel-row" data-group-name="{{ channel.group_name }}">
-        <td><input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}></td>
-        <td>{{ channel.guide_number }}</td>
-        <td style="min-width:210px">
-          <img class="hdhr-channel-logo mb-1 {% if not channel.logo_url %}d-none{% endif %}" {% if channel.logo_url %}src="{{ channel.logo_url }}"{% endif %} alt="{{ channel.name }} 아이콘" style="max-width:80px;max-height:40px" loading="lazy" referrerpolicy="no-referrer">
-          <input class="form-control form-control-sm hdhr-channel-logo-url" type="url" value="{{ channel.logo_override }}" placeholder="자동 아이콘 · 직접 지정할 URL" aria-label="{{ channel.name }} 아이콘 주소">
-          <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-logo-save mt-1" data-channel-id="{{ channel.channel_id }}">아이콘 저장</button>
-          <div class="hdhr-channel-logo-result small mt-1" role="status" aria-live="polite">{{ '수동 지정' if channel.logo_override else '자동' }}</div>
-        </td>
-        <td style="min-width:250px">
-          <div class="hdhr-channel-display-name">{% if not channel.name_override and not channel.epg_channel_id and channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% elif not channel.name_override and not channel.epg_channel_id and channel.raw_data.get('name_missing') %}이름 미수신 (채널 {{ channel.guide_number }}){% else %}{{ channel.name }}{% endif %}</div>
-          {% if channel.name_override or channel.epg_channel_id %}<small class="text-muted">수신 이름: {{ channel.broadcast_name }}{% if channel.epg_channel_id %} · EPG: {{ channel.epg_channel_name }}{% endif %}</small>{% endif %}
-          <input class="form-control form-control-sm hdhr-channel-name-input mt-1" value="{{ channel.name_override }}" maxlength="256" placeholder="{{ channel.broadcast_name }} · 직접 이름 입력" aria-label="{{ channel.name }} 표시 이름">
-          <button type="button" class="btn btn-sm btn-outline-primary hdhr-channel-name-save mt-1" data-channel-id="{{ channel.channel_id }}">이름 저장</button>
-          {% if not channel.encrypted %}<a class="btn btn-sm btn-outline-success mt-1" href="/{{ package_name }}/basic/preview?i={{ channel.channel_id|urlencode }}" target="_blank" rel="noopener noreferrer">새 창 재생</a>{% else %}<span class="small text-muted ml-1">암호화 · 미리보기 불가</span>{% endif %}
-          <div class="hdhr-channel-name-result small mt-1" role="status" aria-live="polite"></div>
-          <input class="form-control form-control-sm hdhr-channel-epg-input mt-2" list="hdhr_epg_channels" value="{{ channel.epg_channel_id }}" maxlength="256" placeholder="EPG 채널명·ID 검색 후 선택" aria-label="{{ channel.name }} EPG 연결" {% if not epg_channels and not channel.epg_channel_id %}disabled{% endif %}>
-          <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-epg-save mt-1" data-channel-id="{{ channel.channel_id }}">EPG 연결·이름 적용</button>
-          <div class="hdhr-channel-epg-result small mt-1" role="status" aria-live="polite"></div>
-        </td>
-        <td style="min-width:180px">
-          <div class="hdhr-channel-group-name mb-1">{{ channel.group_name }}{% if channel.manual_group_name %} · 수동{% endif %}</div>
-          <input class="form-control form-control-sm hdhr-channel-group-input" list="hdhr_group_names" value="{{ channel.manual_group_name }}" placeholder="자동 · 그룹 선택 또는 입력" aria-label="{{ channel.name }} 수동 그룹">
-          <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-group-save mt-1" data-channel-id="{{ channel.channel_id }}">그룹 저장</button>
-          <div class="hdhr-channel-group-result small mt-1" role="status" aria-live="polite"></div>
-        </td>
-        <td style="min-width:230px">
-          <select class="form-control form-control-sm hdhr-profile-select hdhr-channel-profile" aria-label="{{ channel.name }} 출력">{{ output_options(channel.output_profile, '그룹 / 기본 출력 따름') }}</select>
-          <button type="button" class="btn btn-sm btn-outline-primary hdhr-channel-profile-save mt-1" data-channel-id="{{ channel.channel_id }}">채널 출력 저장</button>
-          <div class="hdhr-channel-profile-summary small mt-1">적용: {{ output_profile_labels[channel.effective_output_profile] }}</div>
-          <div class="hdhr-profile-result small mt-1" role="status" aria-live="polite"></div>
-        </td>
-        <td>{% if channel.raw_data.get('source') == 'native_lineup' %}장비 제공 lineup{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% else %}{{ channel.raw_data.get('source', '-') }}{% endif %}</td>
-        <td>{{ channel.video_codec or '-' }}</td><td>{{ channel.audio_codec or '-' }}</td>
-        <td>{% if channel.encrypted %}암호화 · 재생 제외{% elif 'control' in channel.raw_data.get('flags', []) or 'no data' in channel.raw_data.get('flags', []) %}기본 M3U 제외 · 시험 재생 가능{% elif channel.raw_data.get('source') == 'preset_scan' %}사용 선택 시 FF 재생{% else %}{{ '활성' if channel.enabled else '제외' }}{% endif %}{% for flag in channel.raw_data.get('flags', []) %}<span class="badge badge-secondary ml-1">{% if flag == 'encrypted' %}암호화{% elif flag == 'control' %}제어 서비스{% elif flag == 'no data' %}데이터 없음{% else %}{{ flag }}{% endif %}</span>{% endfor %}</td>
-        <td><button type="button" class="btn btn-sm btn-outline-danger hdhr-channel-delete" data-channel-id="{{ channel.channel_id }}">삭제</button></td>
-      </tr>{% endfor %}
-      {% if not channels %}<tr><td colspan="11" class="text-muted">아직 가져온 채널이 없습니다.</td></tr>{% endif %}
-      </tbody></table>
+      {% for group, entries in channel_groups.items() %}
+      {% set group_index = loop.index %}
+      <section class="hdhr-channel-section" aria-labelledby="hdhr_group_{{ group_index }}">
+        <h5 class="hdhr-channel-group-heading" id="hdhr_group_{{ group_index }}">{{ group }} <small>{{ entries|length }}개</small></h5>
+        <ul class="hdhr-channel-list">
+          {% for channel in entries %}
+          {% set panel_id = 'hdhr_channel_panel_' ~ group_index ~ '_' ~ loop.index %}
+          {% set flags = channel.raw_data.get('flags', []) %}
+          {% set show_programme = channel.epg_channel_id and not channel.encrypted and 'control' not in flags and 'no data' not in flags %}
+          <li class="hdhr-channel-row" data-group-name="{{ channel.group_name }}">
+            <div class="hdhr-channel-line">
+              <label class="hdhr-channel-selection">
+                <input type="checkbox" class="hdhr-channel-selected" data-channel-id="{{ channel.channel_id }}" data-count-usable="{{ '1' if channel.channel_id in usable_channel_ids|default([]) else '0' }}" aria-label="{{ channel.name }} 사용" {% if channel.selected %}checked{% endif %}>
+                <span>{{ channel.guide_number or '–' }}</span>
+              </label>
+              <div class="hdhr-channel-main">
+                <span class="hdhr-channel-logo-slot">
+                  <img class="hdhr-channel-logo {% if not channel.logo_url %}d-none{% endif %}" {% if channel.logo_url %}src="{{ channel.logo_url }}"{% endif %} alt="" loading="lazy" referrerpolicy="no-referrer">
+                </span>
+                <div class="hdhr-channel-content">
+                  <div class="hdhr-channel-display-name">{% if not channel.name_override and not channel.epg_channel_id and channel.raw_data.get('source') == 'preset_scan' and channel.name.startswith('Program ') %}이름 미수신 (서비스 {{ channel.raw_data.get('program_number') }}){% elif not channel.name_override and not channel.epg_channel_id and channel.raw_data.get('name_missing') %}이름 미수신 (채널 {{ channel.guide_number }}){% else %}{{ channel.name }}{% endif %}</div>
+                  <div class="hdhr-channel-programme small text-muted" {% if show_programme %}data-epg-id="{{ channel.epg_channel_id }}"{% endif %}>
+                    <span class="hdhr-channel-programme-title">{% if channel.encrypted %}암호화{% elif 'control' in flags %}제어 서비스{% elif 'no data' in flags %}데이터 없음{% elif channel.epg_channel_id %}편성 확인 중{% else %}EPG 미연결{% endif %}</span>
+                    <span class="hdhr-channel-programme-time text-muted"></span>
+                  </div>
+                </div>
+              </div>
+              <span class="hdhr-channel-group-name small">{{ channel.group_name }}</span>
+              <span class="hdhr-channel-profile-summary small">{{ output_profile_labels[channel.effective_output_profile] }}</span>
+              <div class="hdhr-channel-actions">
+                {% if not channel.encrypted %}<a class="btn btn-sm btn-outline-success" href="/{{ package_name }}/basic/preview?i={{ channel.channel_id|urlencode }}" target="_blank" rel="noopener noreferrer" aria-label="{{ channel.name }} 새 창 재생">재생</a>{% endif %}
+                <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-toggle" aria-expanded="false" aria-controls="{{ panel_id }}">설정</button>
+              </div>
+            </div>
+            <div class="hdhr-channel-details" id="{{ panel_id }}" hidden>
+              <div class="hdhr-channel-field">
+                <label for="{{ panel_id }}_name">표시 이름</label>
+                <small class="text-muted d-block mb-1">수신 이름 {{ channel.broadcast_name }}</small>
+                <input id="{{ panel_id }}_name" class="form-control form-control-sm hdhr-channel-name-input" value="{{ channel.name_override }}" maxlength="256" placeholder="{{ channel.epg_channel_name or channel.broadcast_name }}">
+                <button type="button" class="btn btn-sm btn-outline-primary hdhr-channel-name-save mt-1" data-channel-id="{{ channel.channel_id }}">이름 저장</button>
+                <div class="hdhr-channel-name-result small" role="status"></div>
+              </div>
+              <div class="hdhr-channel-field">
+                <label for="{{ panel_id }}_epg">EPG 연결</label>
+                {% if channel.epg_channel_name %}<small class="text-muted d-block mb-1">연결된 EPG {{ channel.epg_channel_name }}</small>{% endif %}
+                <input id="{{ panel_id }}_epg" class="form-control form-control-sm hdhr-channel-epg-input" list="hdhr_epg_channels" value="{{ channel.epg_channel_id }}" maxlength="256" placeholder="EPG 채널명 또는 ID" {% if not epg_channels and not channel.epg_channel_id %}disabled{% endif %}>
+                <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-epg-save mt-1" data-channel-id="{{ channel.channel_id }}" {% if not epg_channels and not channel.epg_channel_id %}disabled{% endif %}>EPG 연결·이름 적용</button>
+                <div class="hdhr-channel-epg-result small" role="status"></div>
+              </div>
+              <div class="hdhr-channel-field">
+                <label for="{{ panel_id }}_group">그룹</label>
+                <input id="{{ panel_id }}_group" class="form-control form-control-sm hdhr-channel-group-input" list="hdhr_group_names" value="{{ channel.manual_group_name }}" placeholder="비워두면 자동 분류">
+                <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-group-save mt-1" data-channel-id="{{ channel.channel_id }}">그룹 저장</button>
+                <div class="hdhr-channel-group-result small" role="status"></div>
+              </div>
+              <div class="hdhr-channel-field">
+                <label for="{{ panel_id }}_profile">출력 방식</label>
+                <select id="{{ panel_id }}_profile" class="form-control form-control-sm hdhr-profile-select hdhr-channel-profile">{{ output_options(channel.output_profile, '그룹 / 기본 출력 따름') }}</select>
+                <button type="button" class="btn btn-sm btn-outline-primary hdhr-channel-profile-save mt-1" data-channel-id="{{ channel.channel_id }}">출력 저장</button>
+                <div class="hdhr-profile-result small" role="status"></div>
+              </div>
+              <div class="hdhr-channel-field">
+                <label for="{{ panel_id }}_logo">아이콘 주소</label>
+                <input id="{{ panel_id }}_logo" class="form-control form-control-sm hdhr-channel-logo-url" type="url" value="{{ channel.logo_override }}" placeholder="비워두면 자동 아이콘">
+                <button type="button" class="btn btn-sm btn-outline-secondary hdhr-channel-logo-save mt-1" data-channel-id="{{ channel.channel_id }}">아이콘 저장</button>
+                <div class="hdhr-channel-logo-result small" role="status"></div>
+              </div>
+              <div class="hdhr-channel-field">
+                <div class="small text-muted mb-1">
+                  {% if channel.raw_data.get('source') == 'native_lineup' %}장비 라인업{% elif channel.raw_data.get('source') == 'preset_scan' %}프리셋 스캔{% endif %}
+                  {% if channel.video_codec %} · 영상 {{ channel.video_codec }}{% endif %}
+                  {% if channel.audio_codec %} · 음성 {{ channel.audio_codec }}{% endif %}
+                </div>
+                <button type="button" class="btn btn-sm btn-outline-danger hdhr-channel-delete" data-channel-id="{{ channel.channel_id }}">채널 삭제</button>
+              </div>
+            </div>
+          </li>
+          {% endfor %}
+        </ul>
+      </section>
+      {% else %}
+      <p class="mb-0 text-muted">아직 가져온 채널이 없습니다.</p>
+      {% endfor %}
     </div>
   </div>
   {% endif %}
@@ -345,6 +393,35 @@
 (function(){
   var root='/' + {{ package_name|tojson }} + '/ajax/' + {{ ajax_sub|tojson }} + '/';
   var form=$('#hdhr_setting_form');
+  $('.hdhr-channel-toggle').on('click', function(){
+    var expanded=this.getAttribute('aria-expanded')==='true';
+    document.getElementById(this.getAttribute('aria-controls')).hidden=expanded;
+    this.setAttribute('aria-expanded',String(!expanded));
+  });
+  var programmeRows=$('.hdhr-channel-programme[data-epg-id]');
+  if(programmeRows.length){
+    var programmeTime=new Intl.DateTimeFormat('ko-KR',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+    var programmeStatus=$('#hdhr_programme_status');
+    function showProgrammes(entries){
+      programmeRows.each(function(){
+        var id=this.getAttribute('data-epg-id');
+        var current=Object.prototype.hasOwnProperty.call(entries,id) ? entries[id] : null;
+        var row=$(this).toggleClass('text-muted',!current).toggleClass('hdhr-on-air',!!current);
+        row.find('.hdhr-channel-programme-title').text(current ? current.title : '편성 정보 없음');
+        row.find('.hdhr-channel-programme-time').text(current ?
+          programmeTime.format(current.start*1000)+'–'+programmeTime.format(current.stop*1000) : '');
+      });
+    }
+    $.ajax({url:root+'current_programmes',type:'POST',dataType:'json',timeout:15000,global:false})
+      .done(function(ret){
+        showProgrammes(ret.programmes || {});
+        programmeStatus.text('편성 조회 '+programmeTime.format(Date.now())).prop('hidden',false);
+      })
+      .fail(function(){
+        showProgrammes({});
+        programmeStatus.text('현재 편성표를 불러오지 못했습니다.').prop('hidden',false);
+      });
+  }
   var scanTimer=null;
   var scanRequest=null;
   var scanActionPending=false;
@@ -521,7 +598,7 @@
     }).always(function(){button.prop('disabled',false);});
   });
   $('.hdhr-channel-epg-save').on('click',function(){
-    var button=$(this).prop('disabled',true),cell=button.closest('td'),status=cell.find('.hdhr-channel-epg-result');
+    var button=$(this).prop('disabled',true),cell=button.closest('.hdhr-channel-field'),status=cell.find('.hdhr-channel-epg-result');
     status.text('저장 중…').removeClass('text-danger');
     $.ajax({url:root+'set_channel_epg',type:'POST',dataType:'json',timeout:15000,global:false,
       data:{channel_id:button.attr('data-channel-id'),epg_channel_id:cell.find('.hdhr-channel-epg-input').val()}
@@ -531,7 +608,7 @@
     }).always(function(){button.prop('disabled',false);});
   });
   $('.hdhr-channel-name-save').on('click',function(){
-    var button=$(this).prop('disabled',true),cell=button.closest('td'),status=cell.find('.hdhr-channel-name-result');
+    var button=$(this).prop('disabled',true),cell=button.closest('.hdhr-channel-field'),status=cell.find('.hdhr-channel-name-result');
     status.text('저장 중…').removeClass('text-danger');
     $.ajax({url:root+'set_channel_name',type:'POST',dataType:'json',timeout:15000,global:false,
       data:{channel_id:button.attr('data-channel-id'),name:cell.find('.hdhr-channel-name-input').val()}
@@ -557,8 +634,9 @@
   $('#hdhr_delete_encrypted_btn').on('click',function(){deleteChannels($(this),'delete_encrypted_channels',{},
     '현재 장비의 암호화 채널 '+$(this).attr('data-count')+'개만 삭제할까요? 제어 서비스·데이터 없음은 유지하며, 다음 스캔에서 다시 발견되면 등록됩니다.');});
   $('.hdhr-channel-profile-save, .hdhr-group-profile-save').on('click', function(){
-    var button=$(this).prop('disabled',true), row=button.closest('tr');
+    var button=$(this).prop('disabled',true);
     var isChannel=button.hasClass('hdhr-channel-profile-save');
+    var row=button.closest(isChannel ? '.hdhr-channel-row' : 'tr');
     var select=row.find(isChannel ? '.hdhr-channel-profile' : '.hdhr-group-profile');
     var status=row.find('.hdhr-profile-result');
     var profile=select.val();
@@ -569,12 +647,12 @@
     $.ajax({url:root+(isChannel ? 'set_channel_profile' : 'set_group_profile'),type:'POST',dataType:'json',timeout:45000,global:false,data:data
     }).done(function(ret){
       status.text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
-      if(ret.ret==='success' && isChannel) row.find('.hdhr-channel-profile-summary').text('적용: '+ret.effective_output_label);
+      if(ret.ret==='success' && isChannel) row.find('.hdhr-channel-profile-summary').text(ret.effective_output_label);
     }).fail(function(){status.text('출력 설정을 저장하지 못했습니다.').addClass('text-danger');
     }).always(function(){button.prop('disabled',false);});
   });
   $('.hdhr-channel-group-save').on('click', function(){
-    var button=$(this).prop('disabled',true), cell=button.closest('td');
+    var button=$(this).prop('disabled',true), cell=button.closest('.hdhr-channel-field');
     var status=cell.find('.hdhr-channel-group-result');
     status.text('저장 중…').removeClass('text-danger');
     $.ajax({url:root+'set_channel_group',type:'POST',dataType:'json',timeout:15000,global:false,
@@ -583,16 +661,16 @@
       status.text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
       if(ret.ret==='success') {
         cell.find('.hdhr-channel-group-input').val(ret.manual_group_name || '');
-        cell.find('.hdhr-channel-group-name').text(ret.group_name+(ret.manual_group_name ? ' · 수동' : ''));
-        cell.closest('tr').find('.hdhr-channel-profile-summary').text('적용: '+ret.effective_output_label);
+        var row=cell.closest('.hdhr-channel-row');
+        row.find('.hdhr-channel-profile-summary').text(ret.effective_output_label);
         if(ret.manual_group_name) $('<option>').val(ret.manual_group_name).appendTo('#hdhr_group_names');
-        if(cell.closest('tr').attr('data-group-name')!==ret.group_name) window.location.reload();
+        if(row.attr('data-group-name')!==ret.group_name) window.location.reload();
       }
     }).fail(function(){status.text('그룹 저장에 실패했습니다.').addClass('text-danger');
     }).always(function(){button.prop('disabled',false);});
   });
   $('.hdhr-channel-logo-save').on('click', function(){
-    var button=$(this).prop('disabled',true), cell=button.closest('td');
+    var button=$(this).prop('disabled',true), cell=button.closest('.hdhr-channel-field');
     var status=cell.find('.hdhr-channel-logo-result');
     status.text('저장 중…').removeClass('text-danger');
     $.ajax({url:root+'set_channel_logo',type:'POST',dataType:'json',timeout:15000,global:false,
@@ -601,7 +679,9 @@
       status.text(ret.msg || '처리했습니다.').toggleClass('text-danger',ret.ret!=='success');
       if(ret.ret==='success') {
         cell.find('.hdhr-channel-logo-url').val(ret.logo_override || '');
-        cell.find('.hdhr-channel-logo').attr('src',ret.logo_url || '').toggleClass('d-none',!ret.logo_url);
+        var logo=cell.closest('.hdhr-channel-row').find('.hdhr-channel-logo');
+        if(ret.logo_url) logo.attr('src',ret.logo_url); else logo.removeAttr('src');
+        logo.toggleClass('d-none',!ret.logo_url);
       }
     }).fail(function(){status.text('아이콘 저장에 실패했습니다.').addClass('text-danger');
     }).always(function(){button.prop('disabled',false);});

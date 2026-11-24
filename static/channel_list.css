@@ -1,0 +1,117 @@
+.hdhr-channel-line {
+  display: grid;
+  grid-template-columns: 4.75rem minmax(0, 1fr) minmax(5rem, 11%) minmax(7.5rem, 16%) 7.75rem;
+  align-items: center;
+  gap: .5rem .75rem;
+  padding: .625rem .75rem;
+}
+.hdhr-channel-columns {
+  font-weight: 600;
+}
+.hdhr-channel-group-heading {
+  padding: .45rem .75rem;
+  margin: 1rem 0 0;
+  background: rgba(115, 131, 156, .16);
+  border-radius: .35rem .35rem 0 0;
+  font-size: .95rem;
+  font-weight: 700;
+}
+.hdhr-channel-group-heading small {
+  margin-left: .35rem;
+}
+.hdhr-channel-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.hdhr-channel-row {
+  border-bottom: 1px solid rgba(115, 131, 156, .24);
+}
+.hdhr-channel-selection,
+.hdhr-channel-main,
+.hdhr-channel-actions {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  margin: 0;
+}
+.hdhr-channel-selection {
+  cursor: pointer;
+  font-size: .875rem;
+  font-variant-numeric: tabular-nums;
+}
+.hdhr-channel-logo-slot {
+  display: grid;
+  width: 2.5rem;
+  height: 1.6rem;
+  place-items: center;
+  flex: 0 0 2.5rem;
+}
+.hdhr-channel-logo {
+  max-width: 100%;
+  max-height: 100%;
+}
+.hdhr-channel-content,
+.hdhr-channel-group-name,
+.hdhr-channel-profile-summary {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: keep-all;
+}
+.hdhr-channel-display-name {
+  font-weight: 700;
+}
+.hdhr-channel-programme {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0 .45rem;
+}
+.hdhr-channel-programme-time {
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.hdhr-on-air .hdhr-channel-programme-title::before {
+  content: "";
+  display: inline-block;
+  width: .4rem;
+  height: .4rem;
+  margin-right: .35rem;
+  border-radius: 50%;
+  background: #218251;
+  vertical-align: .12em;
+}
+.hdhr-channel-actions {
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+.hdhr-channel-details {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: .9rem 1rem;
+  border-radius: .35rem;
+  background: rgba(115, 131, 156, .10);
+  padding: .9rem;
+  margin: 0 .75rem .75rem;
+}
+.hdhr-channel-details[hidden] {
+  display: none;
+}
+.hdhr-channel-field label {
+  font-weight: 600;
+  margin-bottom: .2rem;
+}
+@media (max-width: 780px) {
+  .hdhr-channel-columns {
+    display: none;
+  }
+  .hdhr-channel-line {
+    grid-template-columns: 4rem minmax(0, 1fr) minmax(0, auto);
+    gap: .3rem .55rem;
+  }
+  .hdhr-channel-selection { grid-area: 1 / 1; }
+  .hdhr-channel-main { grid-area: 1 / 2 / 2 / 4; }
+  .hdhr-channel-group-name { grid-area: 2 / 1; }
+  .hdhr-channel-profile-summary { grid-area: 2 / 2; }
+  .hdhr-channel-actions { grid-area: 2 / 3; gap: .25rem; }
+}

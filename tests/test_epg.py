@@ -6,7 +6,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from epg import EPGCache, exact_matches, parse_provider_order, validate_url
+from epg import EPGCache, current_programmes, exact_matches, parse_provider_order, validate_url
 
 XML = b'''<?xml version="1.0" encoding="utf-8"?><tv>
 <channel id="mbc.example"><display-name lang="en">MBC</display-name><display-name lang="ko">MBC TV</display-name></channel>
@@ -113,6 +113,25 @@ class EPGTest(unittest.TestCase):
                          {'mbc': 'mbc.kt', 'radio': 'radio.example'})
         with self.assertRaises(ValueError):
             parse_provider_order('KT,unknown')
+
+    def test_current_programmes_uses_matched_id_offset_and_current_interval(self):
+        from datetime import datetime, timezone
+
+        path = self.cache.root / 'schedule.xml'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text('''<tv xmlns="urn:xmltv">
+          <programme channel="a" start="20261124100000 +0900" stop="20261124113000 +0900"><title>Earlier</title></programme>
+          <programme channel="a" start="20261124013000 +0000" stop="20261124020000 +0000"><title lang="en">News</title><title lang="ko">뉴스</title></programme>
+          <programme channel="b" start="20261124010000 Z" stop="20261124020000 Z"><title>Other</title></programme>
+          <programme channel="a" start="broken" stop="20261124110000 +0900"><title>Broken</title></programme>
+        </tv>''', encoding='utf-8')
+        now = datetime(2026, 11, 24, 1, 30, tzinfo=timezone.utc).timestamp()
+
+        self.assertEqual(current_programmes(path, {'a'}, now), {
+            'a': {'start': int(now), 'stop': int(now) + 1800, 'title': '뉴스'},
+        })
+        self.assertEqual(current_programmes(path, {'b'}, now)['b']['title'], 'Other')
+        self.assertEqual(current_programmes(path, {'a'}, now + 3600), {})
 
     def test_urls_allow_private_xmltv_and_reject_unsafe_schemes_and_credentials(self):
         self.assertEqual(validate_url(' http://192.168.2.10/epg.xml.gz '), 'http://192.168.2.10/epg.xml.gz')

@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import os
 import re
-from collections import Counter
 from datetime import datetime
 from urllib.parse import urlencode, urlsplit
+from xml.etree.ElementTree import ParseError
 
 from flask import Response, jsonify, render_template, request, send_file, redirect
 from plugin import PluginModuleBase, ToolUtil
@@ -28,7 +28,8 @@ from .setup import P, logger
 from .task import snapshot_channel_rows
 from .channel_groups import GROUP_ORDER, channel_identity, group_sort_key, fetch_rules as fetch_group_rules
 from .channel_management import is_encrypted, preview_channel, preview_profile
-from .epg import EPGCache, exact_matches as match_epg, filtered_xmltv, parse_provider_order, validate_url as validate_epg_url
+from .epg import (EPGCache, current_programmes, exact_matches as match_epg, filtered_xmltv,
+                  parse_provider_order, validate_url as validate_epg_url)
 
 
 _CONSUMER_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
@@ -260,9 +261,11 @@ class ModuleBasic(PluginModuleBase):
         channels = [c for c in _store().list_channels() if c['device_id']==settings.get('basic_hdhomerun_device_id')]
         channels.sort(key=group_sort_key)
         group_profiles = _store().group_profiles()
+        channel_groups = {}
         for channel in channels:
             channel['effective_output_profile'] = resolve_output_profile(channel, group_profiles, _output_profile())
             channel['encrypted'] = is_encrypted(channel)
+            channel_groups.setdefault(channel['group_name'], []).append(channel)
         settings['basic_hls_output_profile'] = _output_profile()
         settings['basic_hls_idle_timeout'] = str(_as_int(settings.get('basic_hls_idle_timeout'), 60, 30, 600))
         options=_hls_options()['transcode']
@@ -291,7 +294,7 @@ class ModuleBasic(PluginModuleBase):
             'epg_channels': epg.get('channels', []),
             'epg_updated_time': epg.get('updated_time', ''),
             'epg_api_url': _api_url(f'/{P.package_name}/api/{_SHYNI_EPG_ENDPOINT}') if epg else '',
-            'group_channel_counts': dict(Counter(c['group_name'] for c in channels)),
+            'channel_groups': channel_groups,
             'selected_channel_count': sum(channel['selected'] for channel in channels),
             'learned_mux_count': len(_store().learned_preset(settings.get('basic_hdhomerun_device_id') or '')['muxes']),
             'scan_export_url': _api_url(f'/{P.package_name}/api/scan_preset.json'),
@@ -341,6 +344,19 @@ class ModuleBasic(PluginModuleBase):
 
     def process_ajax(self, sub, req):
         try:
+            if sub == 'current_programmes':
+                cache = EPGCache()
+                snapshot = cache.snapshot((P.ModelSetting.get('basic_epg_url') or '').strip())
+                programmes = {}
+                if snapshot:
+                    device_id = P.ModelSetting.get('basic_hdhomerun_device_id')
+                    ids = {c['epg_channel_id'] for c in _store().list_channels()
+                           if c['device_id'] == device_id and c['epg_channel_id']}
+                    try:
+                        programmes = current_programmes(cache.file_path(snapshot), ids)
+                    except (OSError, ParseError, ValueError):
+                        return jsonify({'ret': 'warning', 'msg': '저장된 편성표를 읽지 못했습니다.'}), 503
+                return jsonify({'programmes': programmes}), 200, {'Cache-Control': 'no-store'}
             if sub in {'refresh_epg', 'auto_match_epg', 'set_channel_epg'}:
                 if req.method != 'POST':
                     return jsonify({'ret': 'warning', 'msg': 'POST 요청이 필요합니다.'}), 405

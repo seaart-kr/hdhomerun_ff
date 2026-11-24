@@ -16,6 +16,7 @@ import urllib.request
 import uuid
 import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
+from functools import lru_cache
 from pathlib import Path
 
 MAX_DOWNLOAD = 32 * 1024 * 1024
@@ -151,6 +152,50 @@ def filtered_xmltv(source, channel_ids):
                 chunk.clear()
     chunk.extend(b'</tv>\n')
     yield bytes(chunk)
+
+
+def _programme_time(value):
+    text = (value or '').strip()
+    if re.fullmatch(r'\d{14}', text):
+        text += ' +0000'
+    return int(datetime.strptime(text, '%Y%m%d%H%M%S %z').timestamp())
+
+
+@lru_cache(maxsize=2)
+def _programme_index(path, channel_ids):
+    index = {}
+    with path.open('rb') as source:
+        for element in _xmltv_entries(source):
+            identity = element.get('channel')
+            if _tag(element) != 'programme' or identity not in channel_ids:
+                continue
+            try:
+                start, stop = (_programme_time(element.get(key)) for key in ('start', 'stop'))
+            except (ValueError, OverflowError):
+                continue
+            titles = [(_clean_name(''.join(child.itertext())), (child.get('lang') or '').lower())
+                      for child in element if _tag(child) == 'title']
+            titles = [(title, lang) for title, lang in titles if title]
+            if stop <= start or not titles:
+                continue
+            title = next((title for title, lang in titles if lang in {'ko', 'kor', 'kr'}), titles[0][0])
+            index.setdefault(identity, []).append((start, stop, title))
+    return index
+
+
+def current_programmes(path, channel_ids, now=None):
+    """Use the matched XMLTV ID and the latest start when programme times overlap."""
+    if not channel_ids:
+        return {}
+    timestamp = time.time() if now is None else now
+    current = {}
+    for identity, slots in _programme_index(path, frozenset(channel_ids)).items():
+        active = max((slot for slot in slots if slot[0] <= timestamp < slot[1]),
+                     key=lambda slot: slot[0], default=None)
+        if active:
+            start, stop, title = active
+            current[identity] = {'start': start, 'stop': stop, 'title': title}
+    return current
 
 
 class _Redirects(urllib.request.HTTPRedirectHandler):
